@@ -4,4 +4,12 @@ version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "matplotlib>=3.10.8",
+    "numpy>=2.4.0",
+    "pyyaml>=6.0.3",
+    "rasterio>=1.4.4",
+    "scipy>=1.16.3",
+    "torchgeo>=0.8.0",
+    "tqdm>=4.67.1",
+]
