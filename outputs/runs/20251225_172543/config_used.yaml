@@ -1,0 +1,173 @@
+paths:
+  data_raw: data/agrifieldnet
+  data_processed: data/processed
+  splits_dir: data/splits
+  model_checkpoint: outputs/runs/best_model.pth
+model:
+  device: cuda
+  tile_limit: 9
+  input_size: 256
+  num_classes: 14
+training:
+  batch_size: 32
+  num_workers: 4
+  val_split: 0.2
+  random_seed: 42
+  epochs: 20
+  lr: 0.0003
+  weight_decay: 0.01
+  amp: true
+  scheduler: cosine
+  use_dice: false
+  dice_weight: 0.5
+  ignore_index: 255
+  grad_clip_norm: null
+  log_every: 20
+bands:
+- name: B01
+  wavelength: 443
+  resolution: 60
+  description: Coastal Aerosol
+- name: B02
+  wavelength: 490
+  resolution: 10
+  description: Blue
+- name: B03
+  wavelength: 560
+  resolution: 10
+  description: Green
+- name: B04
+  wavelength: 665
+  resolution: 10
+  description: Red
+- name: B05
+  wavelength: 705
+  resolution: 20
+  description: Red Edge 1
+- name: B06
+  wavelength: 740
+  resolution: 20
+  description: Red Edge 2
+- name: B07
+  wavelength: 783
+  resolution: 20
+  description: Red Edge 3
+- name: B08
+  wavelength: 842
+  resolution: 10
+  description: NIR
+- name: B8A
+  wavelength: 865
+  resolution: 20
+  description: NIR Narrow
+- name: B09
+  wavelength: 945
+  resolution: 60
+  description: Water Vapor
+- name: B11
+  wavelength: 1610
+  resolution: 20
+  description: SWIR 1
+- name: B12
+  wavelength: 2190
+  resolution: 20
+  description: SWIR 2
+classes:
+  0:
+    name: Background
+    name_ar: خلفية
+    color:
+    - 0
+    - 0
+    - 0
+  1:
+    name: Wheat
+    name_ar: قمح
+    color:
+    - 255
+    - 200
+    - 0
+  2:
+    name: Mustard
+    name_ar: خردل
+    color:
+    - 255
+    - 150
+    - 0
+  3:
+    name: Lentil
+    name_ar: عدس
+    color:
+    - 200
+    - 100
+    - 50
+  4:
+    name: No Crop
+    name_ar: بور
+    color:
+    - 128
+    - 128
+    - 128
+  5:
+    name: Green Pea
+    name_ar: بسلة خضراء
+    color:
+    - 0
+    - 200
+    - 0
+  6:
+    name: Sugarcane
+    name_ar: قصب السكر
+    color:
+    - 100
+    - 200
+    - 100
+  8:
+    name: Garlic
+    name_ar: ثوم
+    color:
+    - 200
+    - 150
+    - 200
+  9:
+    name: Maize
+    name_ar: ذرة صفراء
+    color:
+    - 255
+    - 255
+    - 0
+  13:
+    name: Gram
+    name_ar: حمص
+    color:
+    - 150
+    - 100
+    - 50
+  14:
+    name: Coriander
+    name_ar: كزبرة
+    color:
+    - 0
+    - 150
+    - 100
+  15:
+    name: Potato
+    name_ar: بطاطس
+    color:
+    - 200
+    - 150
+    - 100
+  16:
+    name: Berseem
+    name_ar: برسيم
+    color:
+    - 0
+    - 255
+    - 150
+  36:
+    name: Rice
+    name_ar: أرز
+    color:
+    - 0
+    - 100
+    - 255
