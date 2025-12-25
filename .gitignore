@@ -4,7 +4,7 @@ __pycache__/
 *$py.class
 node_modules/
 data/
-output/
+outputs/
 
 # C extensions
 *.so
