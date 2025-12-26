@@ -5,13 +5,16 @@ This module provides functions to:
 - Load individual Sentinel-2 band GeoTIFFs
 - Load crop label masks
 - Resample bands to a consistent resolution (256x256)
+- Load YAML configuration and write JSON artifacts
 """
 
+import json
 from pathlib import Path
-from typing import Union
+from typing import Any, Union
 
 import numpy as np
 import rasterio
+import yaml
 from rasterio.enums import Resampling
 
 
@@ -220,3 +223,36 @@ def get_label_filepath(
         filename = f"ref_agrifieldnet_competition_v1_labels_train_{tile_id}.tif"
 
     return labels_dir / filename
+
+
+def load_config(path: Union[str, Path]) -> dict[str, Any]:
+    """Load a YAML configuration file into a dict."""
+    path = resolve_path(path)
+    with path.open("r", encoding="utf-8") as handle:
+        return yaml.safe_load(handle)
+
+
+def ensure_dir(path: Union[str, Path]) -> Path:
+    """Create a directory if it does not already exist."""
+    path = Path(path)
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def write_json(path: Union[str, Path], obj: Any) -> None:
+    """Write a JSON file with UTF-8 encoding."""
+    path = Path(path)
+    ensure_dir(path.parent)
+    with path.open("w", encoding="utf-8") as handle:
+        json.dump(obj, handle, indent=2, ensure_ascii=False)
+
+
+def resolve_path(path: Union[str, Path]) -> Path:
+    """Resolve a path relative to the repository root when needed."""
+    path = Path(path)
+    if path.is_absolute():
+        return path
+    if path.exists():
+        return path
+    repo_root = Path(__file__).resolve().parents[3]
+    return repo_root / path

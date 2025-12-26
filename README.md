@@ -94,6 +94,8 @@ agrovision-crop-mapper/
 │           ├─ viz.py
 │           └─ logging.py
 │
+├─ notebooks/                     # Jupyter notebooks for exploration and testing
+│
 ├─ frontend/                       # React + shadcn UI
 │   ├─ package.json
 │   ├─ src/
@@ -112,6 +114,56 @@ agrovision-crop-mapper/
 ```
 
 frontend **never touches ML code directly**.
+
+## Notebook clarification (brief)
+
+Keep notebooks as **orchestrators** only. Put all logic in `backend/src/` and reuse it.
+
+Assume your notebook lives at `notebooks/exploration.ipynb`.
+
+In the **first cell**:
+
+```python
+import sys
+from pathlib import Path
+
+ROOT = Path("..").resolve()
+BACKEND = ROOT / "backend"
+sys.path.append(str(BACKEND))
+```
+
+Then import from `src` (this is intentional):
+
+```python
+from src.train.train import train
+from src.train.evaluate import evaluate
+from src.data.dataset import CropDataset
+from src.models.unet_baseline import UNet
+from src.utils.io import load_config
+```
+
+Load config once and never redefine paths/classes/devices in the notebook:
+
+```python
+cfg = load_config("config/config.yaml")
+```
+
+Run training and evaluation from the notebook:
+
+```python
+model, train_metrics = train(cfg)
+eval_results = evaluate(model, cfg)
+```
+
+**Architecture split (same code used everywhere):**
+
+```
+Training logic  -> backend/src/train/
+Inference logic -> backend/src/inference/
+Experimentation -> notebooks/
+API             -> backend/main.py
+Config          -> config/config.yaml
+```
 
 
 **Rule of thumb (updated):** ignore `data/raw/`, `data/processed/`, and `outputs/`. Version everything else.
