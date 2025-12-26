@@ -3,8 +3,9 @@ __pycache__/
 *.py[codz]
 *$py.class
 
-data/
-output/
+# Data directories (root level only - not backend/src/data/)
+/data/
+/output/
 
 # C extensions
 *.so
