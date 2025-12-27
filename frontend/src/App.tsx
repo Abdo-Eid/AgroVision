@@ -33,6 +33,10 @@ import osmtogeojson from "osmtogeojson";
 const TILE_LIMIT = 9;
 const MIN_AGRI_ZOOM = 8;
 const defaultCenter = { lat: 30.84, lng: 31.02 };
+const MAX_ZOOM = 17;
+const METERS_PER_PIXEL = 10;
+const CHIP_SIZE_PX = 256;
+const EARTH_RADIUS_M = 6378137;
 const apiBase = import.meta.env.VITE_API_BASE ?? "";
 
 function formatPercent(value: number) {
@@ -58,10 +62,8 @@ export default function App() {
   const [agriStatus, setAgriStatus] = useState<"idle" | "loading" | "ready" | "error" | "zoom">(
     "idle"
   );
-
-  const tileCount = useMemo(() => {
-    return Math.max(1, Math.round((11 - zoom) * 1.8));
-  }, [zoom]);
+  const [center, setCenter] = useState(defaultCenter);
+  const [tileCount, setTileCount] = useState(1);
 
   const dominantCrop = useMemo(() => {
     if (!stats.length) {
@@ -131,7 +133,8 @@ export default function App() {
         ]
       },
       center: [defaultCenter.lng, defaultCenter.lat],
-      zoom
+      zoom,
+      maxZoom: MAX_ZOOM
     });
 
     map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-right");
@@ -169,12 +172,32 @@ export default function App() {
         }
       });
       updateBaseBlend(map.getZoom());
-      requestFarmland(map, Math.round(map.getZoom()));
+      updateFromMap();
     });
+
+    const toMercatorX = (lon: number) => (lon * Math.PI * EARTH_RADIUS_M) / 180;
+    const toMercatorY = (lat: number) => {
+      const clamped = Math.max(-85.05112878, Math.min(85.05112878, lat));
+      const rad = (clamped * Math.PI) / 180;
+      return EARTH_RADIUS_M * Math.log(Math.tan(Math.PI / 4 + rad / 2));
+    };
 
     const updateFromMap = () => {
       const nextZoom = Math.round(map.getZoom());
       setZoom(nextZoom);
+      const nextCenter = map.getCenter();
+      setCenter({ lat: nextCenter.lat, lng: nextCenter.lng });
+      const bounds = map.getBounds();
+      const west = bounds.getWest();
+      const east = bounds.getEast();
+      const south = bounds.getSouth();
+      const north = bounds.getNorth();
+      const widthMeters = Math.abs(toMercatorX(east) - toMercatorX(west));
+      const heightMeters = Math.abs(toMercatorY(north) - toMercatorY(south));
+      const chipMeters = METERS_PER_PIXEL * CHIP_SIZE_PX;
+      const tilesX = Math.max(1, Math.ceil(widthMeters / chipMeters));
+      const tilesY = Math.max(1, Math.ceil(heightMeters / chipMeters));
+      setTileCount(tilesX * tilesY);
       requestFarmland(map, nextZoom);
     };
 
@@ -263,7 +286,7 @@ out geom;`;
     try {
       const response = await runInference({
         viewport: {
-          center: defaultCenter,
+          center,
           zoom,
           tileCount
         },
@@ -295,7 +318,7 @@ out geom;`;
         body: JSON.stringify({
           format,
           viewport: {
-            center: defaultCenter,
+            center,
             zoom,
             tileCount
           }
@@ -391,7 +414,7 @@ out geom;`;
                   الاحداثيات
                 </span>
                 <span className="text-xs text-mist/70">
-                  {defaultCenter.lat.toFixed(2)}, {defaultCenter.lng.toFixed(2)}
+                  {center.lat.toFixed(4)}, {center.lng.toFixed(4)}
                 </span>
               </div>
             </CardFooter>
@@ -415,7 +438,7 @@ out geom;`;
                     value={[zoom]}
                     onValueChange={(value) => setZoom(value[0])}
                     min={3}
-                    max={10}
+                    max={MAX_ZOOM}
                     step={1}
                   />
                 </div>
