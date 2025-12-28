@@ -3,9 +3,13 @@ __pycache__/
 *.py[codz]
 *$py.class
 node_modules/
-data/
-outputs/
+# Ignore any top-level data folder
+/data/
 
+# But keep the package data folder tracked
+!agrovision_core/src/agrovision_core/data/
+
+outputs/
 # C extensions
 *.so
 

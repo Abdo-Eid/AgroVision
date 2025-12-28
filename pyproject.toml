@@ -99,7 +99,6 @@ dependencies = [
     "stack-data==0.6.3",
     "sympy==1.14.0",
     "timm==1.0.22",
-    "torch==2.7.1",
     "torchgeo==0.8.0",
     "torchmetrics==1.8.2",
     "tornado==6.5.4",
