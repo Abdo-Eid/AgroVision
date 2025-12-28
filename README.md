@@ -26,13 +26,17 @@ The system follows a **modern web architecture** with a **React (shadcn) fronten
 **→ No fundamental change to the ML pipeline is required.**
 However, the project structure is clarified to:
 
-* separate **ML code**, **backend API**, and **frontend UI**
+* separate **shared ML code**, **backend API**, and **frontend UI**
 * support parallel work
 * align with real-world deployment practices
+* make notebooks reusable **without** `sys.path` hacks by installing shared code as a package
 
 ---
 
 ## 1) Simplified file structure (clean + easy to split)
+
+> **Key update:** shared ML code is now a proper Python library: `agrovision_core/`
+> The backend imports from it, and notebooks can import it directly.
 
 ```
 agrovision-crop-mapper/
@@ -60,41 +64,42 @@ agrovision-crop-mapper/
 │       ├─ train_ids.csv
 │       └─ val_ids.csv
 │
+├─ agrovision_core/                # ✅ shared ML library (installable package)
+│   ├─ pyproject.toml
+│   ├─ README.md
+│   └─ src/
+│      └─ agrovision_core/
+│         ├─ data/                 # dataset + preprocessing
+│         │  ├─ download_links.md
+│         │  ├─ prepare_dataset.py
+│         │  └─ dataset.py
+│         │
+│         ├─ models/               # segmentation models (from scratch)
+│         │  ├─ blocks.py          # CNN + transformer blocks
+│         │  ├─ unet_baseline.py
+│         │  └─ unet_transformer.py
+│         │
+│         ├─ train/                # offline training + evaluation
+│         │  ├─ train.py
+│         │  ├─ evaluate.py
+│         │  └─ metrics.py
+│         │
+│         └─ utils/
+│            ├─ io.py
+│            ├─ viz.py
+│            └─ logging.py
+│
 ├─ backend/                        # FastAPI backend (Python)
 │   ├─ main.py                     # FastAPI entry point
 │   ├─ api/
 │   │   ├─ routes.py               # REST endpoints (/infer, /stats, /export)
 │   │   └─ schemas.py              # Pydantic request/response models
 │   ├─ services/
-│   │   └─ inference_service.py    # connects API to ML inference
-│   │
-│   └─ src/                        # ML engine (library, NOT an app)
-│       ├─ data/                   # dataset + preprocessing
-│       │   ├─ download_links.md
-│       │   ├─ prepare_dataset.py
-│       │   └─ dataset.py
-│       │
-│       ├─ models/                 # segmentation models (from scratch)
-│       │   ├─ blocks.py            # CNN + transformer blocks
-│       │   ├─ unet_baseline.py
-│       │   └─ unet_transformer.py
-│       │
-│       ├─ train/                  # offline training + evaluation
-│       │   ├─ train.py
-│       │   ├─ evaluate.py
-│       │   └─ metrics.py
-│       │
-│       ├─ inference/              # inference + overlay + stats
-│       │   ├─ predictor.py
-│       │   ├─ stitch.py
-│       │   └─ stats.py
-│       │
-│       └─ utils/
-│           ├─ io.py
-│           ├─ viz.py
-│           └─ logging.py
+│   │   └─ inference_service.py    # connects API to ML inference (imports agrovision_core)
+│   └─ src/                        # optional backend-only modules (NOT shared ML)
+│       └─ __init__.py
 │
-├─ notebooks/                     # Jupyter notebooks for exploration and testing
+├─ notebooks/                      # Jupyter notebooks for exploration and testing
 │
 ├─ frontend/                       # React + shadcn UI
 │   ├─ package.json
@@ -102,7 +107,7 @@ agrovision-crop-mapper/
 │   │   ├─ main.tsx
 │   │   ├─ app/                    # pages / routes
 │   │   ├─ components/             # shadcn + custom components
-│   │   └─ lib/api.ts               # API calls to FastAPI
+│   │   └─ lib/api.ts              # API calls to FastAPI
 │   └─ ...
 │
 ├─ outputs/                        # generated outputs (NOT pushed)
@@ -115,31 +120,54 @@ agrovision-crop-mapper/
 
 frontend **never touches ML code directly**.
 
+---
+
+## Shared ML library (agrovision_core)
+
+### Why we introduced `agrovision_core/`
+
+Before, shared code lived under `backend/src/...`, which made notebooks painful because imports depended on where code was executed from.
+
+Now, shared ML code is a **real Python package**, so:
+
+* notebooks can import it directly (no path hacks)
+* backend can import it cleanly
+* training/evaluation can be run from anywhere
+
+### How it is installed (uv)
+
+From the repo root:
+
+```bash
+uv add --editable ./agrovision_core
+```
+
+Editable install means changes in `agrovision_core/src/agrovision_core/...` apply immediately.
+
+### Quick verification
+
+```bash
+uv run python -c "import agrovision_core; print('OK:', agrovision_core.__file__)"
+```
+
+---
+
 ## Notebook clarification (brief)
 
-Keep notebooks as **orchestrators** only. Put all logic in `backend/src/` and reuse it.
+Keep notebooks as **orchestrators** only. Put all logic in `agrovision_core/` and reuse it.
 
 Assume your notebook lives at `notebooks/exploration.ipynb`.
 
-In the **first cell**:
+✅ **No `sys.path.append(...)` required** (because `agrovision_core` is installed editable via uv).
+
+Import directly:
 
 ```python
-import sys
-from pathlib import Path
-
-ROOT = Path("..").resolve()
-BACKEND = ROOT / "backend"
-sys.path.append(str(BACKEND))
-```
-
-Then import from `src` (this is intentional):
-
-```python
-from src.train.train import train
-from src.train.evaluate import evaluate
-from src.data.dataset import CropDataset
-from src.models.unet_baseline import UNet
-from src.utils.io import load_config
+from agrovision_core.train.train import train
+from agrovision_core.train.evaluate import evaluate
+from agrovision_core.data.dataset import CropDataset
+from agrovision_core.models.unet_baseline import UNet
+from agrovision_core.utils.io import load_config
 ```
 
 Load config once and never redefine paths/classes/devices in the notebook:
@@ -158,13 +186,13 @@ eval_results = evaluate(model, cfg)
 **Architecture split (same code used everywhere):**
 
 ```
-Training logic  -> backend/src/train/
-Inference logic -> backend/src/inference/
+Training logic  -> agrovision_core/src/agrovision_core/train/
+Model code      -> agrovision_core/src/agrovision_core/models/
+Data pipeline   -> agrovision_core/src/agrovision_core/data/
 Experimentation -> notebooks/
 API             -> backend/main.py
 Config          -> config/config.yaml
 ```
-
 
 **Rule of thumb (updated):** ignore `data/raw/`, `data/processed/`, and `outputs/`. Version everything else.
 (You can keep empty folders using `.gitkeep` files if you want.)
@@ -176,7 +204,7 @@ Config          -> config/config.yaml
 ### Student A — Data pipeline (prep + dataset loader)
 
 **Owns:**
-`backend/src/data/*`, `config/config.yaml`, `data/splits/*`, `data/processed/*` (generated locally)
+`agrovision_core/src/agrovision_core/data/*`, `config/config.yaml`, `data/splits/*`, `data/processed/*` (generated locally)
 
 * Download instructions + folder organization (`data/raw/...`)
 * `prepare_dataset.py` to generate:
@@ -190,11 +218,12 @@ Config          -> config/config.yaml
 **Delivers:**
 “Run one script → processed data exists → training loads batches correctly.”
 
+---
 
 ### Student B — Model implementation (baseline + custom transformer blocks)
 
 **Owns:**
-`backend/src/models/*`
+`agrovision_core/src/agrovision_core/models/*`
 
 * Build baseline **U-Net from scratch** (`unet_baseline.py`)
 * Implement reusable components (`blocks.py`) including:
@@ -214,10 +243,12 @@ Config          -> config/config.yaml
 **Delivers:**
 “Explains architectural choices + passes dummy tensor test + ready to plug into training.”
 
+---
+
 ### Student C — Training + evaluation
 
 **Owns:**
-`backend/src/train/*`
+`agrovision_core/src/agrovision_core/train/*`
 
 * Training loop + checkpointing to `outputs/runs/`
 * Losses: Cross-Entropy + optional Dice
@@ -227,11 +258,12 @@ Config          -> config/config.yaml
 **Delivers:**
 “Train baseline/custom model and produce reproducible metrics + best checkpoint.”
 
+---
+
 ### Student D — Backend inference + API (FastAPI)
 
 **Owns:**
-`backend/main.py`, `backend/api/*`, `backend/services/*`,
-and `backend/src/inference/*` (plus `backend/src/utils/*` if needed)
+`backend/main.py`, `backend/api/*`, `backend/services/*` (and backend-only helpers if needed)
 
 * Build **FastAPI backend**
 * API endpoints (example):
@@ -239,16 +271,14 @@ and `backend/src/inference/*` (plus `backend/src/utils/*` if needed)
   * `POST /api/infer` → returns overlay + stats
   * `GET /api/legend` → class names + colors
   * `POST /api/export` (optional)
-* `inference_service.py` bridges API → ML inference
+* `inference_service.py` bridges API → ML code
 * Load trained model once (cached in backend)
-* Call `backend/src/inference/*` for:
-
-  * prediction
-  * stitching (if needed)
-  * stats computation
+* Import shared ML code from `agrovision_core` (models/utils/train artifacts)
 
 **Delivers:**
 “Frontend can call backend API and receive overlay + stats reliably.”
+
+---
 
 ### Student E — Frontend (React + shadcn)
 
@@ -264,6 +294,8 @@ and `backend/src/inference/*` (plus `backend/src/utils/*` if needed)
 
 **Delivers:**
 “Working frontend that consumes backend API and displays/exports results.”
+
+---
 
 ## 3) Maximize parallel work (dependency map + how to avoid blocking)
 
@@ -286,8 +318,11 @@ and `backend/src/inference/*` (plus `backend/src/utils/*` if needed)
   → stats_table (JSON)
   → raw_mask (optional)
   ```
+
 * Student D implements mock API responses first
+
 * Student E builds UI against mock API
+
 * When Student C produces `best_model.pth`, Student D switches mock → real inference
 
 ### Weekly-style parallel milestones
@@ -301,21 +336,15 @@ and `backend/src/inference/*` (plus `backend/src/utils/*` if needed)
 
 ### One-line team rule (recommended to include)
 
-> **Backend owns ML. Frontend owns UI.
+> **Backend owns API. Frontend owns UI. Shared ML lives in `agrovision_core`.
 > Communication happens only through API calls.
 > Training is offline and never triggered from the frontend.**
-Below are the **updated versions of ONLY the parts you pasted**, rewritten to match
-👉 **React + shadcn (frontend)**
-👉 **FastAPI (backend)**
-👉 **NO Streamlit, NO `src/app/`**
-
-Each section is **copy-paste ready**.
 
 ---
 
-## 1) Where is the access for the app? (Entry points)
+## 4) Where is the access for the app? (Entry points)
 
-### ✅ **Two entry points (Frontend + Backend)**
+### ✅ Two entry points (Frontend + Backend)
 
 ### Backend (FastAPI)
 
@@ -325,15 +354,15 @@ backend/main.py
 
 This is the **only Python file that is run**.
 
-**Example:**
+**Example (recommended with uv):**
 
 ```bash
-uvicorn backend.main:app --reload
+uv run uvicorn backend.main:app --reload
 ```
 
 The backend:
 
-* loads the trained model
+* loads the trained model (checkpoint produced by training)
 * runs inference
 * exposes REST APIs for the frontend
 
@@ -356,21 +385,21 @@ npm run dev
 ➡️ The frontend **never runs ML code**.
 ➡️ It only communicates with the backend via HTTP APIs.
 
+---
 
-## 2) How the project is split across students (very important)
+## 5) How the project is split across students (very important)
 
 > **Key rule:**
-> Each student owns **one folder** (backend ML, backend API, or frontend).
-> ML code lives inside the backend and is **imported**, not executed directly.
+> Each student owns **one folder** (shared ML library, backend API, or frontend).
+> ML code lives in `agrovision_core` and is **imported**, not duplicated.
 
 ### Folder ownership
 
 ```
-backend/src/
+agrovision_core/src/agrovision_core/
 ├─ data/        → Student A (data pipeline)
 ├─ models/      → Student B (model architecture)
 ├─ train/       → Student C (training & evaluation)
-├─ inference/   → Student D (prediction + stats)
 └─ utils/       → shared helpers
 
 backend/
@@ -385,12 +414,13 @@ frontend/
 ### What this means in practice
 
 * Students **do not edit each other’s folders**
-* ML code is reused by importing it into FastAPI
+* ML code is reused by importing it into FastAPI from `agrovision_core`
 * Frontend and backend work **independently**
 * Integration happens via **API contracts**, not shared files
 
+---
 
-## 3) High-level connection (one-page mental model)
+## 6) High-level connection (one-page mental model)
 
 ```
 User
@@ -399,11 +429,9 @@ Frontend (React + shadcn)
  ↓   HTTP (JSON)
 Backend (FastAPI)
  ↓
-Inference Engine
+ML library (agrovision_core)
  ↓
-Model
- ↓
-Stats + Overlay
+Model + Stats + Overlay
  ↓
 Backend returns JSON + image
  ↓
@@ -417,22 +445,25 @@ frontend/
    ↓ (API calls)
 backend/
    ├─ api/
-   ├─ services/
-   └─ src/
-       ├─ inference/
-       ├─ models/
-       └─ utils/
+   └─ services/
+         ↓ (imports)
+agrovision_core/
+   ├─ models/
+   ├─ train/       (offline)
+   ├─ data/        (offline)
+   └─ utils/
 ```
 
 Training is **separate and offline**:
 
 ```
-backend/src/train/ → backend/src/models/
-backend/src/train/ → backend/src/data/
+agrovision_core/train/ → agrovision_core/models/
+agrovision_core/train/ → agrovision_core/data/
 ```
 
+---
 
-## 4) Detailed connection: who calls whom (important)
+## 7) Detailed connection: who calls whom (important)
 
 ## A) Frontend (React) — Student E
 
@@ -453,6 +484,7 @@ backend/src/train/ → backend/src/data/
    * stats table (JSON)
 5. Displays results + export options
 
+---
 
 ## B) Backend (FastAPI) — Student D
 
@@ -466,38 +498,22 @@ Examples:
 * `GET /api/legend`
 * `POST /api/export`
 
-
 ### `backend/services/inference_service.py`
 
 **Role:** bridge between API and ML code
 
+Example import style:
+
 ```python
-from src.inference.predictor import run_inference
+from agrovision_core.models.unet_baseline import UNet
+from agrovision_core.utils.io import load_config
 ```
 
 * Loads trained model once (cached)
-* Calls ML inference functions
+* Calls shared ML functions / model code
 * Formats results for API response
 
-
-### `backend/src/inference/`
-
-**Role:** pure inference logic (NO FastAPI here)
-
-* `predictor.py` → run model inference
-* `stitch.py` → combine tiles
-* `stats.py` → compute pixel counts, percentages, confidence
-
-```python
-def run_inference(viewport_tiles):
-    mask = predict_tiles(viewport_tiles)
-    overlay = make_overlay(mask)
-    stats = compute_stats(mask)
-    return overlay, stats
-```
-
-➡️ **This function is the API between ML and backend.**
-
+---
 
 ## C) `models/` (pure deep learning) — Student B
 
@@ -510,9 +526,10 @@ def run_inference(viewport_tiles):
 
 Used by:
 
-* `backend/src/train/train.py`
-* `backend/src/inference/predictor.py`
+* `agrovision_core/train/train.py`
+* backend inference service (runtime)
 
+---
 
 ## D) `train/` (offline, not part of runtime) — Student C
 
@@ -521,8 +538,8 @@ Used by:
 **Uses:**
 
 ```python
-from src.data.dataset import CropDataset
-from src.models.unet_baseline import UNet
+from agrovision_core.data.dataset import CropDataset
+from agrovision_core.models.unet_baseline import UNet
 ```
 
 **Produces:**
@@ -534,6 +551,7 @@ outputs/runs/best_model.pth
 ➡️ The backend **loads this file**.
 ➡️ Training is never triggered from the frontend.
 
+---
 
 ## E) `data/` (used only by training) — Student A
 
@@ -548,6 +566,8 @@ outputs/runs/best_model.pth
 * Loads from `data/processed/`
 
 ➡️ Neither backend APIs nor frontend touch raw data.
+
+---
 
 ## F) `config/config.yaml` (glue)
 
@@ -568,15 +588,16 @@ device: cuda
 
 ➡️ Change behavior without touching frontend or backend logic.
 
+---
 
-## 5) One full execution trace (step-by-step)
+## 8) One full execution trace (step-by-step)
 
 ### User runs (two terminals)
 
-**Backend**
+**Backend (recommended via uv)**
 
 ```bash
-uvicorn backend.main:app --reload
+uv run uvicorn backend.main:app --reload
 ```
 
 **Frontend**
@@ -598,8 +619,9 @@ npm run dev
 7. Backend returns JSON + overlay image
 8. Frontend renders overlay, stats, and export buttons
 
+---
 
-## 6) Why this structure is correct (and safe for grading)
+## 9) Why this structure is correct (and safe for grading)
 
 * **Clear frontend/backend separation**
 * **Industry-standard architecture**
@@ -608,3 +630,4 @@ npm run dev
 * **Clear ownership per student**
 * **Easy to mock APIs**
 * **Scales to real deployment**
+* **Notebooks stay clean** (imports work because shared ML is packaged as `agrovision_core`)

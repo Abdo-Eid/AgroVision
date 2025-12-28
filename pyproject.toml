@@ -5,6 +5,7 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "agrovision-core",
     "matplotlib>=3.10.8",
     "numpy>=2.4.0",
     "pyyaml>=6.0.3",
@@ -13,3 +14,11 @@ dependencies = [
     "torchgeo>=0.8.0",
     "tqdm>=4.67.1",
 ]
+
+[tool.uv.workspace]
+members = [
+    "agrovision_core",
+]
+
+[tool.uv.sources]
+agrovision-core = { workspace = true }
