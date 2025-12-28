@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Dict
 
-from src.models.unet_baseline import UNet
+from ..models.unet_baseline import UNet
 
 
 def build_model(cfg: Dict[str, Any]) -> UNet:

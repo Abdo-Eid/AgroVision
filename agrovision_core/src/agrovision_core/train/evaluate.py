@@ -8,8 +8,8 @@ from typing import Any, Dict
 import torch
 from torch.utils.data import DataLoader
 
-from src.data.dataset import CropDataset
-from src.train.metrics import (
+from ..data.dataset import CropDataset
+from .metrics import (
     fast_confusion_matrix,
     iou_per_class,
     macro_f1,
@@ -17,8 +17,8 @@ from src.train.metrics import (
     per_class_f1,
     pixel_accuracy,
 )
-from src.train.modeling import build_model
-from src.utils.io import resolve_path
+from .modeling import build_model
+from ..utils.io import resolve_path
 
 
 def _resolve_device(cfg: Dict[str, Any]) -> torch.device:
@@ -52,13 +52,36 @@ def _evaluate_loader(
         for batch in dataloader:
             images = batch["image"].to(device, non_blocking=True)
             masks = batch["mask"].to(device, non_blocking=True)
+
+            # If masks use raw class IDs (e.g., 36) convert them to contiguous training indices
+            # using the dataset-provided mapping `raw_to_contig` (if available).
+            raw_to_contig = getattr(dataloader.dataset, "raw_to_contig", None)
+            contig_ignore = ignore_index
+            if raw_to_contig:
+                import numpy as _np
+
+                mask_np = masks.cpu().numpy()
+                # Build a small lookup array up to the max observed raw id in this batch
+                max_val = int(mask_np.max()) if mask_np.size else 0
+                lookup = _np.full((max_val + 1,), -1, dtype=_np.int64)
+                for r, c in raw_to_contig.items():
+                    if r <= max_val:
+                        lookup[int(r)] = int(c)
+                mapped = lookup[mask_np]
+                masks = torch.from_numpy(mapped).to(device)
+
+                # Map ignore index from raw id to contiguous id if possible
+                if isinstance(ignore_index, int):
+                    contig_ignore = raw_to_contig.get(int(ignore_index), ignore_index)
+
             logits = model(images)
             preds = torch.argmax(logits, dim=1)
+
             batch_cm = fast_confusion_matrix(
                 preds=preds,
                 targets=masks,
                 num_classes=num_classes,
-                ignore_index=ignore_index,
+                ignore_index=contig_ignore,
             )
             confusion += batch_cm.cpu()
 
@@ -90,9 +113,28 @@ def evaluate(
 
     model.to(device)
 
-    val_dataset = CropDataset("val", cfg)
+    data_dir = resolve_path(cfg["paths"]["data_processed"])
+    if not data_dir.exists():
+        raise FileNotFoundError(
+            f"Processed data directory not found: {data_dir}\n"
+            "Run the dataset preparation script to generate `*_images.npy`/`*_masks.npy`."
+        )
+    val_dataset = CropDataset(data_dir, split="val")
     batch_size = int(cfg.get("training", {}).get("batch_size", 1))
     num_workers = int(cfg.get("training", {}).get("num_workers", 0))
+
+    # Avoid DataLoader multiprocessing issues in interactive kernels
+    try:
+        import sys, os
+
+        if num_workers > 0 and ("ipykernel" in sys.modules or os.name == "nt"):
+            print(
+                "Interactive or Windows environment detected; setting num_workers=0 to avoid DataLoader spawn errors."
+            )
+            num_workers = 0
+    except Exception:
+        pass
+
     pin_memory = device.type == "cuda"
     val_loader = DataLoader(
         val_dataset,
@@ -103,7 +145,7 @@ def evaluate(
     )
 
     ignore_index = int(cfg.get("training", {}).get("ignore_index", 255))
-    num_classes = len(val_dataset.class_map)
+    num_classes = int(val_dataset.num_classes)
     raw_metrics = _evaluate_loader(model, val_loader, num_classes, device, ignore_index)
 
     per_class_iou = {}

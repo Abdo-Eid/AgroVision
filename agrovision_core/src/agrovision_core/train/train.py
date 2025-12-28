@@ -15,10 +15,10 @@ from torch import nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, WeightedRandomSampler
 
-from src.data.dataset import CropDataset
-from src.train.evaluate import _evaluate_loader, evaluate
-from src.train.modeling import build_model
-from src.utils.io import ensure_dir, resolve_path
+from ..data.dataset import CropDataset
+from .evaluate import _evaluate_loader, evaluate
+from .modeling import build_model
+from ..utils.io import ensure_dir, resolve_path
 
 
 def _set_seed(seed: int) -> None:
@@ -229,10 +229,18 @@ def train(cfg: Dict[str, Any]) -> Tuple[nn.Module, Dict[str, Any]]:
     run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
     run_dir = ensure_dir(resolve_path("outputs") / "runs" / run_id)
 
-    train_dataset = CropDataset("train", cfg)
-    val_dataset = CropDataset("val", cfg)
+    # Fix: use configured processed data directory and explicit split names
+    data_dir = resolve_path(cfg["paths"]["data_processed"])
+    if not data_dir.exists():
+        raise FileNotFoundError(
+            f"Processed data directory not found: {data_dir}\n"
+            "Run the dataset preparation script to generate `*_images.npy`/`*_masks.npy`."
+        )
 
-    num_classes = max(train_dataset.class_map.values()) + 1
+    train_dataset = CropDataset(data_dir, split="train")
+    val_dataset = CropDataset(data_dir, split="val")
+
+    num_classes = int(train_dataset.num_classes)
     model_cfg = cfg.setdefault("model", {})
     if model_cfg.get("num_classes") != num_classes:
         model_cfg["num_classes"] = num_classes
@@ -246,6 +254,23 @@ def train(cfg: Dict[str, Any]) -> Tuple[nn.Module, Dict[str, Any]]:
 
     batch_size = int(training_cfg.get("batch_size", 1))
     num_workers = int(training_cfg.get("num_workers", 0))
+
+    # Avoid multiprocessing worker spawn issues in interactive environments (notebooks)
+    # and commonly problematic Windows spawn contexts. If we're running inside an
+    # IPython kernel or similar interactive session, force num_workers to 0.
+    try:
+        import sys, os
+
+        if num_workers > 0 and ("ipykernel" in sys.modules or os.name == "nt"):
+            print(
+                "Interactive or Windows environment detected; setting num_workers=0 to avoid DataLoader spawn errors."
+            )
+            num_workers = 0
+            training_cfg["num_workers"] = 0
+    except Exception:
+        # Be conservative: if detection fails, keep the configured value
+        pass
+
     pin_memory = device.type == "cuda"
 
     sampler = None
@@ -297,7 +322,7 @@ def train(cfg: Dict[str, Any]) -> Tuple[nn.Module, Dict[str, Any]]:
     elif isinstance(class_weights_cfg, str) and class_weights_cfg.lower() == "auto":
         class_weights = _load_class_weights(
             cfg,
-            train_dataset.class_map,
+            train_dataset.raw_to_contig,
             power=class_weights_power,
         )
     if class_weights is not None:
@@ -342,7 +367,11 @@ def train(cfg: Dict[str, Any]) -> Tuple[nn.Module, Dict[str, Any]]:
         scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=step_size, gamma=0.1)
 
     use_amp = bool(training_cfg.get("amp", True)) and device.type == "cuda"
-    scaler = torch.amp.GradScaler(enabled=use_amp, device_type=device.type)
+    try:
+        scaler = torch.amp.GradScaler(enabled=use_amp, device_type=device.type)
+    except TypeError:
+        # Older PyTorch versions do not accept `device_type` kwarg
+        scaler = torch.amp.GradScaler(enabled=use_amp)
     use_dice = bool(training_cfg.get("use_dice", False))
     dice_weight = float(training_cfg.get("dice_weight", 0.5))
     use_focal = bool(training_cfg.get("use_focal", False))
@@ -359,6 +388,7 @@ def train(cfg: Dict[str, Any]) -> Tuple[nn.Module, Dict[str, Any]]:
     for epoch in range(1, epochs + 1):
         model.train()
         running_loss = 0.0
+        train_steps = 0
 
         for step, batch in enumerate(train_loader, start=1):
             images = batch["image"].to(device, non_blocking=True)
@@ -393,6 +423,7 @@ def train(cfg: Dict[str, Any]) -> Tuple[nn.Module, Dict[str, Any]]:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), float(grad_clip_norm))
             scaler.step(optimizer)
             scaler.update()
+            train_steps += 1
 
             running_loss += float(loss.item())
 
@@ -400,7 +431,8 @@ def train(cfg: Dict[str, Any]) -> Tuple[nn.Module, Dict[str, Any]]:
                 avg_loss = running_loss / step
                 print(f"Epoch {epoch} Step {step}: loss={avg_loss:.4f}")
 
-        if scheduler is not None:
+        # Only step the scheduler if we performed at least one optimizer step this epoch.
+        if scheduler is not None and train_steps > 0:
             scheduler.step()
 
         epoch_loss = running_loss / max(1, len(train_loader))
