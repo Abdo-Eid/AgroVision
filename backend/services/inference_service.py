@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import io
 import json
+import logging
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -42,10 +43,12 @@ class InferenceService:
         self._model: torch.nn.Module | None = None
         self._device: torch.device | None = None
         self._num_classes: int | None = None
+        self._logger = logging.getLogger("agrovision.backend.inference")
 
     def _load_config(self) -> dict[str, Any]:
         if self._config is None:
             self._config = load_config(self._config_path)
+            self._logger.info("Loaded config from %s", self._config_path)
         return self._config
 
     def _get_backend_cfg(self) -> dict[str, Any]:
@@ -67,6 +70,7 @@ class InferenceService:
                 )
             with class_map_path.open("r", encoding="utf-8") as handle:
                 self._class_map = json.load(handle)
+            self._logger.info("Loaded class map from %s", class_map_path)
         return self._class_map
 
     def _load_norm_stats(self) -> dict[str, Any]:
@@ -80,6 +84,7 @@ class InferenceService:
                 )
             with stats_path.open("r", encoding="utf-8") as handle:
                 self._norm_stats = json.load(handle)
+            self._logger.info("Loaded normalization stats from %s", stats_path)
         return self._norm_stats
 
     def _select_device(self, device_name: str) -> torch.device:
@@ -142,7 +147,9 @@ class InferenceService:
         self._device = self._select_device(device_name)
 
         checkpoint_path = self._resolve_model_path()
+        self._logger.info("Loading checkpoint from %s", checkpoint_path)
         checkpoint = torch.load(checkpoint_path, map_location="cpu")
+        self._logger.info("Checkpoint loaded into memory (%s)", checkpoint_path.name)
         if isinstance(checkpoint, dict) and "model_state" in checkpoint:
             state_dict = checkpoint["model_state"]
             meta = checkpoint
@@ -176,6 +183,13 @@ class InferenceService:
         model.eval()
         self._model = model
         self._num_classes = num_classes
+        self._logger.info(
+            "Model ready | name=%s device=%s in_channels=%s num_classes=%s",
+            model_name,
+            self._device,
+            in_channels,
+            num_classes,
+        )
         return model
 
     def _band_names(self) -> list[str]:
@@ -387,6 +401,13 @@ class InferenceService:
 
         backend_cfg = self._get_backend_cfg()
         is_mock = bool(backend_cfg.get("mock_inference", True))
+        self._logger.info(
+            "Inference request | tileCount=%s tileLimit=%s includeConfidence=%s mock=%s",
+            tile_count,
+            tile_limit,
+            include_confidence,
+            is_mock,
+        )
         start = time.perf_counter()
         if is_mock:
             result = self._run_mock(include_confidence)

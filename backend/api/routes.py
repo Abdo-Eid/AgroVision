@@ -1,3 +1,5 @@
+import logging
+
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 
@@ -6,6 +8,7 @@ from backend.services.inference_service import InferenceError, InferenceService
 
 router = APIRouter()
 service = InferenceService()
+logger = logging.getLogger("agrovision.backend.routes")
 
 
 def _error_response(status_code: int, code: str, message: str) -> JSONResponse:
@@ -16,14 +19,21 @@ def _error_response(status_code: int, code: str, message: str) -> JSONResponse:
 @router.get("/api/legend", response_model=list[LegendEntry])
 def get_legend():
     try:
+        logger.info("GET /api/legend")
         return service.get_legend()
     except InferenceError as exc:
+        logger.warning("Legend error: %s | %s", exc.code, exc.message)
         return _error_response(exc.status_code, exc.code, exc.message)
 
 
 @router.post("/api/infer", response_model=InferResponse)
 def infer(request: InferRequest):
     try:
+        logger.info(
+            "POST /api/infer | zoom=%s tileCount=%s",
+            request.viewport.zoom,
+            request.viewport.tileCount,
+        )
         include_confidence = bool(
             request.options.includeConfidence if request.options else False
         )
@@ -32,8 +42,14 @@ def infer(request: InferRequest):
             include_confidence=include_confidence,
         )
     except InferenceError as exc:
+        logger.warning("Inference error: %s | %s", exc.code, exc.message)
         return _error_response(exc.status_code, exc.code, exc.message)
 
+    logger.info(
+        "Inference complete | runtimeMs=%s isMock=%s",
+        result.runtime_ms,
+        result.is_mock,
+    )
     return InferResponse(
         overlayImage=result.overlay_image,
         legend=result.legend,

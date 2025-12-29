@@ -8,7 +8,7 @@ paths:
   data_raw: data/agrifieldnet
   data_processed: data/processed
   splits_dir: data/splits
-  model_checkpoint: outputs/runs/best_model.pth
+  model_checkpoint: outputs/models/unet_baseline_best_model.pth
 
 # =============================================================================
 # Model Settings
@@ -23,7 +23,7 @@ model:
 # Backend Settings
 # =============================================================================
 backend:
-  mock_inference: true
+  mock_inference: false
   demo_split: val
   demo_tile_index: 0
   overlay_alpha: 0.45

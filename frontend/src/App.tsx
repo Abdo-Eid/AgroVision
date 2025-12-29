@@ -37,11 +37,20 @@ const MAX_ZOOM = 17;
 const METERS_PER_PIXEL = 10;
 const CHIP_SIZE_PX = 256;
 const EARTH_RADIUS_M = 6378137;
+const OVERLAY_SOURCE_ID = "analysis-overlay";
+const OVERLAY_LAYER_ID = "analysis-overlay-layer";
 const apiBase = import.meta.env.VITE_API_BASE ?? "";
 
 function formatPercent(value: number) {
   return `${value.toFixed(1)}%`;
 }
+
+type ViewBounds = {
+  minLat: number;
+  minLon: number;
+  maxLat: number;
+  maxLon: number;
+};
 
 export default function App() {
   const mapContainerRef = useRef<HTMLDivElement | null>(null);
@@ -64,6 +73,8 @@ export default function App() {
   );
   const [center, setCenter] = useState(defaultCenter);
   const [tileCount, setTileCount] = useState(1);
+  const [viewportBounds, setViewportBounds] = useState<ViewBounds | null>(null);
+  const [overlayBounds, setOverlayBounds] = useState<ViewBounds | null>(null);
 
   const dominantCrop = useMemo(() => {
     if (!stats.length) {
@@ -192,6 +203,12 @@ export default function App() {
       const east = bounds.getEast();
       const south = bounds.getSouth();
       const north = bounds.getNorth();
+      setViewportBounds({
+        minLat: south,
+        minLon: west,
+        maxLat: north,
+        maxLon: east
+      });
       const widthMeters = Math.abs(toMercatorX(east) - toMercatorX(west));
       const heightMeters = Math.abs(toMercatorY(north) - toMercatorY(south));
       const chipMeters = METERS_PER_PIXEL * CHIP_SIZE_PX;
@@ -222,6 +239,63 @@ export default function App() {
       map.setZoom(zoom);
     }
   }, [zoom]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) {
+      return;
+    }
+    if (!overlayImage || !overlayBounds) {
+      if (map.getLayer(OVERLAY_LAYER_ID)) {
+        map.removeLayer(OVERLAY_LAYER_ID);
+      }
+      if (map.getSource(OVERLAY_SOURCE_ID)) {
+        map.removeSource(OVERLAY_SOURCE_ID);
+      }
+      return;
+    }
+    const applyOverlay = () => {
+      const coordinates: [number, number][] = [
+        [overlayBounds.minLon, overlayBounds.maxLat],
+        [overlayBounds.maxLon, overlayBounds.maxLat],
+        [overlayBounds.maxLon, overlayBounds.minLat],
+        [overlayBounds.minLon, overlayBounds.minLat]
+      ];
+      const source = map.getSource(OVERLAY_SOURCE_ID) as maplibregl.ImageSource | undefined;
+      if (source) {
+        source.updateImage({ url: overlayImage, coordinates });
+      } else {
+        map.addSource(OVERLAY_SOURCE_ID, {
+          type: "image",
+          url: overlayImage,
+          coordinates
+        });
+        map.addLayer({
+          id: OVERLAY_LAYER_ID,
+          type: "raster",
+          source: OVERLAY_SOURCE_ID,
+          paint: {
+            "raster-opacity": opacity / 100
+          }
+        });
+      }
+    };
+    if (!map.isStyleLoaded()) {
+      map.once("load", applyOverlay);
+      return;
+    }
+    applyOverlay();
+  }, [overlayImage, overlayBounds]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) {
+      return;
+    }
+    if (map.getLayer(OVERLAY_LAYER_ID)) {
+      map.setPaintProperty(OVERLAY_LAYER_ID, "raster-opacity", opacity / 100);
+    }
+  }, [opacity]);
 
   const requestFarmland = (map: maplibregl.Map, zoomLevel: number) => {
     if (zoomLevel < MIN_AGRI_ZOOM) {
@@ -283,12 +357,28 @@ out geom;`;
   const handleRun = async () => {
     setLoading(true);
     setError(null);
+    const requestBounds =
+      viewportBounds ??
+      (() => {
+        const map = mapRef.current;
+        if (!map) {
+          return null;
+        }
+        const bounds = map.getBounds();
+        return {
+          minLat: bounds.getSouth(),
+          minLon: bounds.getWest(),
+          maxLat: bounds.getNorth(),
+          maxLon: bounds.getEast()
+        };
+      })();
     try {
       const response = await runInference({
         viewport: {
           center,
           zoom,
-          tileCount
+          tileCount,
+          bounds: requestBounds ?? undefined
         },
         options: {
           includeConfidence: true
@@ -299,6 +389,9 @@ out geom;`;
       setRuntimeMs(response.meta.runtimeMs);
       setOverlayImage(response.overlayImage ?? null);
       setIsMock(response.meta.isMock);
+      if (requestBounds) {
+        setOverlayBounds(requestBounds);
+      }
     } catch (err) {
       setError("Run Analysis failed. Check backend status or switch to mock data.");
     } finally {
@@ -381,16 +474,7 @@ out geom;`;
               <div className="relative h-[420px] overflow-hidden rounded-3xl border border-white/10 bg-gradient-to-br from-moss/40 via-ink/40 to-ink/90">
                 <div className="absolute inset-0 bg-[radial-gradient(circle_at_top,_rgba(240,194,90,0.22),_transparent_50%)]" />
                 <div ref={mapContainerRef} className="absolute inset-0" />
-                <div className="pointer-events-none absolute inset-10 rounded-2xl border border-white/70 bg-white/0 shadow-[0_0_0_1px_rgba(255,255,255,0.25),0_0_25px_rgba(240,194,90,0.15)]">
-                  {overlayImage && (
-                    <img
-                      src={overlayImage}
-                      alt="Crop overlay"
-                      className="h-full w-full object-cover"
-                      style={{ opacity: opacity / 100 }}
-                    />
-                  )}
-                </div>
+                <div className="pointer-events-none absolute inset-10 rounded-2xl border border-white/70 bg-white/0 shadow-[0_0_0_1px_rgba(255,255,255,0.25),0_0_25px_rgba(240,194,90,0.15)]" />
               </div>
             </CardContent>
             <CardFooter className="flex flex-wrap items-center gap-4">

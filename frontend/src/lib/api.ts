@@ -18,13 +18,12 @@ export type InferResponse = {
   legend: LegendEntry[];
   meta: {
     runtimeMs: number;
-    tileCount: number;
     isMock: boolean;
   };
 };
 
-const apiBase = import.meta.env.VITE_API_BASE ?? "";
-export const mockEnabled = import.meta.env.VITE_USE_MOCK !== "0";
+const apiBase = import.meta.env.VITE_API_BASE ?? "http://localhost:8000";
+export const mockEnabled = import.meta.env.VITE_USE_MOCK === "1";
 
 const mockLegend: LegendEntry[] = [
   { id: 0, name: "Background", color: "#23323a" },
@@ -62,6 +61,12 @@ type InferPayload = {
     center: { lat: number; lng: number };
     zoom: number;
     tileCount: number;
+    bounds?: {
+      minLat: number;
+      minLon: number;
+      maxLat: number;
+      maxLon: number;
+    };
   };
   options: {
     includeConfidence: boolean;
@@ -76,7 +81,6 @@ export async function runInference(payload: InferPayload): Promise<InferResponse
       legend: mockLegend,
       meta: {
         runtimeMs: 2360,
-        tileCount: payload.viewport.tileCount,
         isMock: true
       }
     };
@@ -88,19 +92,20 @@ export async function runInference(payload: InferPayload): Promise<InferResponse
     },
     body: JSON.stringify(payload)
   });
+  const data = await response.json().catch(() => null);
   if (!response.ok) {
-    throw new Error("Inference request failed.");
+    const message = data?.message ?? "Inference request failed.";
+    throw new Error(message);
   }
-  const data = await response.json();
-  const overlayImage = data.overlay_image ?? data.overlayImage ?? null;
+  const overlayImage = data?.overlayImage ?? data?.overlay_image ?? null;
+  const meta = data?.meta ?? {};
   return {
     overlayImage,
-    stats: data.stats ?? data.stats_table ?? [],
-    legend: data.legend ?? mockLegend,
+    stats: data?.stats ?? data?.stats_table ?? [],
+    legend: data?.legend ?? [],
     meta: {
-      runtimeMs: data.runtime_ms ?? 0,
-      tileCount: payload.viewport.tileCount,
-      isMock: false
+      runtimeMs: meta.runtimeMs ?? data?.runtime_ms ?? 0,
+      isMock: meta.isMock ?? false
     }
   };
 }
