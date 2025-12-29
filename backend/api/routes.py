@@ -40,19 +40,17 @@ def infer(request: InferRequest):
         result = service.run_inference(
             tile_count=request.viewport.tileCount,
             include_confidence=include_confidence,
+            bounds=request.viewport.bounds.model_dump() if request.viewport.bounds else None,
+            center=request.viewport.center.model_dump(),
         )
     except InferenceError as exc:
         logger.warning("Inference error: %s | %s", exc.code, exc.message)
         return _error_response(exc.status_code, exc.code, exc.message)
 
-    logger.info(
-        "Inference complete | runtimeMs=%s isMock=%s",
-        result.runtime_ms,
-        result.is_mock,
-    )
+    logger.info("Inference complete | runtimeMs=%s", result.runtime_ms)
     return InferResponse(
         overlayImage=result.overlay_image,
         legend=result.legend,
         stats=result.stats,
-        meta={"runtimeMs": result.runtime_ms, "isMock": result.is_mock},
+        meta={"runtimeMs": result.runtime_ms, "overlayBounds": result.overlay_bounds},
     )

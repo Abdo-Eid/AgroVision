@@ -23,10 +23,15 @@ model:
 # Backend Settings
 # =============================================================================
 backend:
-  mock_inference: false
   demo_split: val
   demo_tile_index: 0
   overlay_alpha: 0.45
+  sentinel2_stac_url: "https://planetarycomputer.microsoft.com/api/stac/v1"
+  sentinel2_collection: "sentinel-2-l2a"
+  sentinel2_date_window: "2023-01-01/2024-12-31"
+  sentinel2_cloud_cover: 60
+  sentinel2_max_items: 10
+  sentinel2_scale: 0.01
 
 # =============================================================================
 # Training Settings

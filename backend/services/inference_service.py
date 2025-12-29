@@ -31,7 +31,7 @@ class InferenceResult:
     legend: list[dict[str, Any]]
     stats: list[dict[str, Any]]
     runtime_ms: int
-    is_mock: bool
+    overlay_bounds: dict[str, float] | None
 
 
 class InferenceService:
@@ -196,41 +196,160 @@ class InferenceService:
         bands = self._load_config().get("bands", [])
         return [band.get("name", "") for band in bands if band.get("name")]
 
-    def _load_demo_sample(self) -> tuple[np.ndarray, np.ndarray]:
+    def _load_sentinel2_tile(
+        self,
+        bounds: dict[str, float],
+        center: dict[str, float],
+    ) -> tuple[np.ndarray, dict[str, float]]:
+        try:
+            import pystac_client
+            import planetary_computer
+            import rasterio
+            from rasterio import windows
+            from rasterio.enums import Resampling
+            from rasterio.warp import reproject, transform
+        except ModuleNotFoundError as exc:
+            raise InferenceError(
+                "sentinel2_missing_dependency",
+                "Sentinel-2 inference requires rasterio, pystac-client, and planetary-computer.",
+                status_code=500,
+            ) from exc
+
         backend_cfg = self._get_backend_cfg()
-        split = backend_cfg.get("demo_split", "val")
-        index = int(backend_cfg.get("demo_tile_index", 0))
+        stac_url = backend_cfg.get(
+            "sentinel2_stac_url",
+            "https://planetarycomputer.microsoft.com/api/stac/v1",
+        )
+        collection = backend_cfg.get("sentinel2_collection", "sentinel-2-l2a")
+        date_window = backend_cfg.get("sentinel2_date_window", "2023-01-01/2024-12-31")
+        cloud_filter = float(backend_cfg.get("sentinel2_cloud_cover", 60))
+        max_items = int(backend_cfg.get("sentinel2_max_items", 10))
+        s2_scale = float(backend_cfg.get("sentinel2_scale", 0.01))
 
-        data_dir = self._data_dir()
-        images_path = data_dir / f"{split}_images.npy"
-        masks_path = data_dir / f"{split}_masks.npy"
+        bbox = [
+            float(bounds["minLon"]),
+            float(bounds["minLat"]),
+            float(bounds["maxLon"]),
+            float(bounds["maxLat"]),
+        ]
+        center_lat = float(center["lat"])
+        center_lon = float(center["lng"])
 
-        if not images_path.exists():
+        catalog = pystac_client.Client.open(
+            stac_url,
+            modifier=planetary_computer.sign_inplace,
+        )
+        search = catalog.search(
+            collections=[collection],
+            bbox=bbox,
+            datetime=date_window,
+            query={"eo:cloud_cover": {"lt": cloud_filter}},
+            max_items=max_items,
+        )
+        items = list(search.items())
+        if not items:
             raise InferenceError(
-                "demo_images_missing",
-                f"Missing {images_path}. Run dataset preparation.",
+                "sentinel2_no_items",
+                "No Sentinel-2 items found for the requested bounds/date window.",
+                status_code=502,
+            )
+
+        item = sorted(items, key=lambda x: x.properties.get("eo:cloud_cover", 100))[0]
+        bands = self._band_names()
+        if not bands:
+            raise InferenceError(
+                "sentinel2_bands_missing",
+                "No bands configured in config.yaml.",
                 status_code=500,
             )
-        if not masks_path.exists():
-            raise InferenceError(
-                "demo_masks_missing",
-                f"Missing {masks_path}. Run dataset preparation.",
-                status_code=500,
-            )
 
-        images = np.load(images_path, mmap_mode="r")
-        masks = np.load(masks_path, mmap_mode="r")
-        if images.shape[0] == 0:
-            raise InferenceError(
-                "demo_empty",
-                f"No samples found in {images_path}.",
-                status_code=500,
+        def get_asset_href(stac_item, band_name: str) -> str:
+            assets = stac_item.assets
+            if band_name not in assets:
+                raise InferenceError(
+                    "sentinel2_asset_missing",
+                    f"Band {band_name} not found in STAC item assets.",
+                    status_code=502,
+                )
+            return assets[band_name].href
+
+        band_hrefs = {b: get_asset_href(item, b) for b in bands}
+
+        def get_reference_window(href: str, size: int = 256):
+            with rasterio.open(href) as src:
+                x, y = transform("EPSG:4326", src.crs, [center_lon], [center_lat])
+                row, col = src.index(x[0], y[0])
+                half = size // 2
+                row_off = max(0, row - half)
+                col_off = max(0, col - half)
+                row_off = min(row_off, src.height - size)
+                col_off = min(col_off, src.width - size)
+                win = windows.Window(
+                    col_off=col_off, row_off=row_off, width=size, height=size
+                )
+                return win, src.crs, src.transform
+
+        ref_href = band_hrefs["B02"]
+        ref_window, ref_crs, ref_transform = get_reference_window(ref_href, size=256)
+        tile_bounds = windows.bounds(ref_window, ref_transform)
+        xs = [tile_bounds[0], tile_bounds[2], tile_bounds[2], tile_bounds[0]]
+        ys = [tile_bounds[1], tile_bounds[1], tile_bounds[3], tile_bounds[3]]
+        lons, lats = transform(ref_crs, "EPSG:4326", xs, ys)
+        overlay_bounds = {
+            "minLat": float(min(lats)),
+            "minLon": float(min(lons)),
+            "maxLat": float(max(lats)),
+            "maxLon": float(max(lons)),
+        }
+
+        def read_and_resample_to_ref(
+            href: str,
+            ref_crs,
+            ref_transform,
+            ref_window,
+            out_shape: tuple[int, int] = (256, 256),
+        ) -> np.ndarray:
+            with rasterio.open(href) as src:
+                ref_bounds = windows.bounds(ref_window, ref_transform)
+                src_window = windows.from_bounds(*ref_bounds, transform=src.transform)
+                src_window = src_window.round_offsets().round_lengths()
+                src_data = src.read(1, window=src_window).astype(np.float32)
+                src_transform = src.window_transform(src_window)
+                dst = np.zeros(out_shape, dtype=np.float32)
+                reproject(
+                    source=src_data,
+                    destination=dst,
+                    src_transform=src_transform,
+                    src_crs=src.crs,
+                    dst_transform=windows.transform(ref_window, ref_transform),
+                    dst_crs=ref_crs,
+                    resampling=Resampling.bilinear,
+                )
+                return dst
+
+        stack = []
+        for band in bands:
+            band_arr = read_and_resample_to_ref(
+                band_hrefs[band], ref_crs, ref_transform, ref_window
             )
-        if index >= images.shape[0] or index < 0:
-            index = 0
-        image = np.array(images[index])
-        mask = np.array(masks[index])
-        return image, mask
+            stack.append(band_arr)
+
+        s2_tile = np.stack(stack, axis=0) * s2_scale
+        norm_stats = self._load_norm_stats()
+        normalized = np.zeros_like(s2_tile, dtype=np.float32)
+        for i, band in enumerate(bands):
+            stats = norm_stats.get(band)
+            if not stats:
+                raise InferenceError(
+                    "normalization_missing_band",
+                    f"Missing normalization stats for band {band}.",
+                    status_code=500,
+                )
+            mean = float(stats.get("mean", 0.0))
+            std = float(stats.get("std", 1.0))
+            normalized[i] = (s2_tile[i] - mean) / (std + 1e-6)
+
+        return normalized, overlay_bounds
 
     def _contig_to_raw(self, class_map: dict[str, Any], num_classes: int) -> dict[int, int]:
         mapping = {int(k): int(v) for k, v in class_map.get("contig_to_raw", {}).items()}
@@ -388,7 +507,12 @@ class InferenceService:
         return self._legend(class_map)
 
     def run_inference(
-        self, *, tile_count: int, include_confidence: bool
+        self,
+        *,
+        tile_count: int,
+        include_confidence: bool,
+        bounds: dict[str, float] | None,
+        center: dict[str, float],
     ) -> InferenceResult:
         cfg = self._load_config()
         tile_limit = int(cfg.get("model", {}).get("tile_limit", 9))
@@ -399,47 +523,38 @@ class InferenceService:
                 status_code=400,
             )
 
-        backend_cfg = self._get_backend_cfg()
-        is_mock = bool(backend_cfg.get("mock_inference", True))
         self._logger.info(
-            "Inference request | tileCount=%s tileLimit=%s includeConfidence=%s mock=%s",
+            "Inference request | tileCount=%s tileLimit=%s includeConfidence=%s",
             tile_count,
             tile_limit,
             include_confidence,
-            is_mock,
         )
         start = time.perf_counter()
-        if is_mock:
-            result = self._run_mock(include_confidence)
-        else:
-            result = self._run_model(include_confidence)
+        if bounds is None:
+            raise InferenceError(
+                "viewport_bounds_missing",
+                "Viewport bounds are required for Sentinel-2 inference.",
+                status_code=400,
+            )
+        result = self._run_model(include_confidence, bounds=bounds, center=center)
         runtime_ms = int((time.perf_counter() - start) * 1000)
         return InferenceResult(
             overlay_image=result.overlay_image,
             legend=result.legend,
             stats=result.stats,
             runtime_ms=runtime_ms,
-            is_mock=is_mock,
+            overlay_bounds=result.overlay_bounds,
         )
 
-    def _run_mock(self, include_confidence: bool) -> InferenceResult:
-        image, mask = self._load_demo_sample()
-        class_map = self._load_class_map()
-        rgb = self._make_rgb(image)
-        overlay_alpha = float(self._get_backend_cfg().get("overlay_alpha", 0.45))
-        overlay = self._render_overlay(rgb, mask, class_map, overlay_alpha)
-        stats = self._compute_stats(mask, None, class_map, include_confidence)
-        return InferenceResult(
-            overlay_image=overlay,
-            legend=self._legend(class_map),
-            stats=stats,
-            runtime_ms=0,
-            is_mock=True,
-        )
-
-    def _run_model(self, include_confidence: bool) -> InferenceResult:
+    def _run_model(
+        self,
+        include_confidence: bool,
+        *,
+        bounds: dict[str, float],
+        center: dict[str, float],
+    ) -> InferenceResult:
         model = self._load_model()
-        image, _ = self._load_demo_sample()
+        image, overlay_bounds = self._load_sentinel2_tile(bounds=bounds, center=center)
         class_map = self._load_class_map()
         rgb = self._make_rgb(image)
 
@@ -469,5 +584,5 @@ class InferenceService:
             legend=self._legend(class_map),
             stats=stats,
             runtime_ms=0,
-            is_mock=False,
+            overlay_bounds=overlay_bounds,
         )

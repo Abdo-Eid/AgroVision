@@ -48,7 +48,7 @@ class StatsRow(BaseModel):
 
 class InferMeta(BaseModel):
     runtimeMs: int = Field(..., ge=0)
-    isMock: bool
+    overlayBounds: ViewportBounds | None = None
 
 
 class InferResponse(BaseModel):

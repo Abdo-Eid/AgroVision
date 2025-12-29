@@ -21,7 +21,6 @@ import {
 } from "@/components/ui/table";
 import {
   fetchLegend,
-  mockEnabled,
   runInference,
   type LegendEntry,
   type StatsRow
@@ -39,7 +38,6 @@ const CHIP_SIZE_PX = 256;
 const EARTH_RADIUS_M = 6378137;
 const OVERLAY_SOURCE_ID = "analysis-overlay";
 const OVERLAY_LAYER_ID = "analysis-overlay-layer";
-const apiBase = import.meta.env.VITE_API_BASE ?? "";
 
 function formatPercent(value: number) {
   return `${value.toFixed(1)}%`;
@@ -66,7 +64,6 @@ export default function App() {
   const [academicView, setAcademicView] = useState(false);
   const [runtimeMs, setRuntimeMs] = useState(0);
   const [overlayImage, setOverlayImage] = useState<string | null>(null);
-  const [isMock, setIsMock] = useState(false);
   const [exporting, setExporting] = useState<"png" | "csv" | null>(null);
   const [agriStatus, setAgriStatus] = useState<"idle" | "loading" | "ready" | "error" | "zoom">(
     "idle"
@@ -90,13 +87,6 @@ export default function App() {
       .catch(() => {
         setLegend([]);
       });
-  }, []);
-
-  useEffect(() => {
-    if (!mockEnabled) {
-      return;
-    }
-    handleRun();
   }, []);
 
   useEffect(() => {
@@ -388,12 +378,12 @@ out geom;`;
       setStats(response.stats);
       setRuntimeMs(response.meta.runtimeMs);
       setOverlayImage(response.overlayImage ?? null);
-      setIsMock(response.meta.isMock);
-      if (requestBounds) {
-        setOverlayBounds(requestBounds);
+      const resolvedBounds = response.meta.overlayBounds ?? requestBounds ?? null;
+      if (resolvedBounds) {
+        setOverlayBounds(resolvedBounds);
       }
     } catch (err) {
-      setError("Run Analysis failed. Check backend status or switch to mock data.");
+      setError("Run Analysis failed. Check backend status.");
     } finally {
       setLoading(false);
     }
@@ -403,32 +393,54 @@ out geom;`;
     setExporting(format);
     setError(null);
     try {
-      const response = await fetch(`${apiBase}/api/export`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          format,
-          viewport: {
-            center,
-            zoom,
-            tileCount
-          }
-        })
-      });
-      if (!response.ok) {
-        throw new Error("Export failed.");
+      if (format === "png") {
+        if (!overlayImage) {
+          throw new Error("No overlay image available.");
+        }
+        const base64 = overlayImage.split(",")[1];
+        if (!base64) {
+          throw new Error("Overlay image is invalid.");
+        }
+        const binary = atob(base64);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i += 1) {
+          bytes[i] = binary.charCodeAt(i);
+        }
+        const blob = new Blob([bytes], { type: "image/png" });
+        const url = URL.createObjectURL(blob);
+        const anchor = document.createElement("a");
+        anchor.href = url;
+        anchor.download = "agrovision-overlay.png";
+        anchor.click();
+        URL.revokeObjectURL(url);
+        return;
       }
-      const blob = await response.blob();
+
+      if (stats.length === 0) {
+        throw new Error("No statistics available.");
+      }
+      const headers = ["id", "name", "pixels", "percent", "confidence"];
+      const rows = stats.map((row) =>
+        [
+          row.id,
+          `"${row.name.replaceAll('"', '""')}"`,
+          row.pixels,
+          row.percent.toFixed(3),
+          row.confidence.toFixed(3)
+        ].join(",")
+      );
+      const csv = [headers.join(","), ...rows].join("\n");
+      const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
       const url = URL.createObjectURL(blob);
       const anchor = document.createElement("a");
       anchor.href = url;
-      anchor.download = `agrovision-export.${format === "png" ? "png" : "csv"}`;
+      anchor.download = "agrovision-stats.csv";
       anchor.click();
       URL.revokeObjectURL(url);
     } catch (err) {
-      setError("Export failed. Backend export endpoint not available yet.");
+      const message =
+        err instanceof Error ? err.message : "Export failed. Try again.";
+      setError(message);
     } finally {
       setExporting(null);
     }
@@ -454,11 +466,6 @@ out geom;`;
             <div className="rounded-full border border-white/15 bg-white/10 px-4 py-2 text-xs uppercase tracking-[0.25em] text-mist/70">
               Demo region: Nile Delta
             </div>
-            {isMock && (
-              <div className="rounded-full border border-canary/50 bg-canary/10 px-3 py-2 text-xs font-semibold uppercase tracking-[0.2em] text-canary">
-                Mock data
-              </div>
-            )}
           </div>
         </header>
 

@@ -45,7 +45,15 @@ Response body:
       "confidence": 0.92
     }
   ],
-  "meta": { "runtimeMs": 1120, "isMock": true }
+  "meta": {
+    "runtimeMs": 1120,
+    "overlayBounds": {
+      "minLat": 30.55,
+      "minLon": 30.75,
+      "maxLat": 31.25,
+      "maxLon": 31.55
+    }
+  }
 }
 ```
 
@@ -53,7 +61,7 @@ Notes:
 - `overlayImage` is a PNG data URI (base64).
 - `legend.color` is a CSS hex string.
 - `stats` excludes raw class `0` (unlabeled/background).
-- `meta.isMock` is `true` when `backend.mock_inference` is enabled.
+ - `meta.overlayBounds` is optional; when present, it should be used for map alignment.
 
 Error response:
 

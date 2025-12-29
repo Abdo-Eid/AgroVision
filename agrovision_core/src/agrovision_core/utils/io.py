@@ -13,9 +13,19 @@ from pathlib import Path
 from typing import Any, Union
 
 import numpy as np
-import rasterio
 import yaml
-from rasterio.enums import Resampling
+
+
+def _require_rasterio():
+    try:
+        import rasterio
+        from rasterio.enums import Resampling
+    except ModuleNotFoundError as exc:
+        raise ModuleNotFoundError(
+            "rasterio is required for GeoTIFF I/O. Install it to use "
+            "load_band_tiff/load_label_tiff."
+        ) from exc
+    return rasterio, Resampling
 
 
 def load_band_tiff(
@@ -39,6 +49,7 @@ def load_band_tiff(
     """
     filepath = Path(filepath)
 
+    rasterio, Resampling = _require_rasterio()
     with rasterio.open(filepath) as src:
         # Check if resampling is needed
         if src.height == target_size[0] and src.width == target_size[1]:
@@ -78,6 +89,7 @@ def load_label_tiff(
     """
     filepath = Path(filepath)
 
+    rasterio, Resampling = _require_rasterio()
     with rasterio.open(filepath) as src:
         if src.height == target_size[0] and src.width == target_size[1]:
             data = src.read(1).astype(np.int64)
