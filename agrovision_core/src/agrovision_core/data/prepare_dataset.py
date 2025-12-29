@@ -10,8 +10,10 @@ Output:
     data/processed/
     ├── train_images.npy          # (N_train, 12, 256, 256) float32
     ├── train_masks.npy           # (N_train, 256, 256) int64
+    ├── train_field_ids.npy       # (N_train, 256, 256) int64 - field IDs per pixel
     ├── val_images.npy            # (N_val, 12, 256, 256) float32
     ├── val_masks.npy             # (N_val, 256, 256) int64
+    ├── val_field_ids.npy         # (N_val, 256, 256) int64 - field IDs per pixel
     ├── normalization_stats.json  # Per-band mean and std
     └── class_map.json            # Class ID to name mapping
 
@@ -193,7 +195,7 @@ def load_tile(
     tile_id: str,
     config: dict,
     norm_stats: dict,
-) -> tuple[np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Load and normalize a single tile.
 
@@ -208,10 +210,11 @@ def load_tile(
 
     Returns
     -------
-    tuple[np.ndarray, np.ndarray]
-        (image, mask) where:
+    tuple[np.ndarray, np.ndarray, np.ndarray]
+        (image, mask, field_ids) where:
         - image: (12, 256, 256) float32 normalized
         - mask: (256, 256) int64 class IDs
+        - field_ids: (256, 256) int64 field IDs per pixel
     """
     source_dir = Path(config["paths"]["data_raw"]) / "source"
     labels_dir = Path(config["paths"]["data_raw"]) / "train_labels"
@@ -239,7 +242,15 @@ def load_tile(
     label_path = get_label_filepath(labels_dir, tile_id, "raster")
     mask = load_label_tiff(label_path, target_size)  # (256, 256)
 
-    return image, mask
+    # Load field IDs
+    field_ids_path = get_label_filepath(labels_dir, tile_id, "field_ids")
+    if field_ids_path.exists():
+        field_ids = load_label_tiff(field_ids_path, target_size)  # (256, 256)
+    else:
+        # If field_ids not available, use zeros
+        field_ids = np.zeros(target_size, dtype=np.int64)
+
+    return image, mask, field_ids
 
 
 def generate_npy_files(
@@ -277,41 +288,43 @@ def generate_npy_files(
     # Pre-allocate arrays
     images = np.zeros((n_tiles, n_bands, target_size, target_size), dtype=np.float32)
     masks = np.zeros((n_tiles, target_size, target_size), dtype=np.int64)
+    field_ids_arr = np.zeros((n_tiles, target_size, target_size), dtype=np.int64)
 
     class_counts = {}
 
+    # Build mapping once (outside the loop for efficiency)
+    raw_to_contig = build_raw_to_contig_map(config)
+    max_raw = max(raw_to_contig.keys())
+    lut = np.zeros(max_raw + 1, dtype=np.int64)
+    for raw_id, contig_id in raw_to_contig.items():
+        lut[raw_id] = contig_id
+
     print(f"Processing {n_tiles} tiles for {output_prefix} set...")
     for i, tile_id in enumerate(tqdm(tile_ids, desc=f"Generating {output_prefix}")):
-        # Build mapping once
-        raw_to_contig = build_raw_to_contig_map(config)
-        max_raw = max(raw_to_contig.keys())
-        lut = np.zeros(max_raw + 1, dtype=np.int64)
-        for raw_id, contig_id in raw_to_contig.items():
-            lut[raw_id] = contig_id
+        # Load tile data including field_ids
+        image, mask, field_ids = load_tile(tile_id, config, norm_stats)
 
-        # inside the loop:
-        image, mask = load_tile(tile_id, config, norm_stats)
-
-        # ✅ Remap mask from raw IDs -> contiguous IDs
+        # Remap mask from raw IDs -> contiguous IDs
         mask = lut[mask]
 
         images[i] = image
         masks[i] = mask
+        field_ids_arr[i] = field_ids
 
-        # ✅ Count class pixels on contiguous IDs
+        # Count class pixels on contiguous IDs
         unique, counts = np.unique(mask, return_counts=True)
         for cls, cnt in zip(unique, counts):
             cls = int(cls)
             class_counts[cls] = class_counts.get(cls, 0) + int(cnt)
 
-
-
     # Save arrays
     np.save(output_dir / f"{output_prefix}_images.npy", images)
     np.save(output_dir / f"{output_prefix}_masks.npy", masks)
+    np.save(output_dir / f"{output_prefix}_field_ids.npy", field_ids_arr)
 
     print(f"Saved {output_prefix}_images.npy: shape {images.shape}")
     print(f"Saved {output_prefix}_masks.npy: shape {masks.shape}")
+    print(f"Saved {output_prefix}_field_ids.npy: shape {field_ids_arr.shape}")
 
     return n_tiles, class_counts
 
@@ -437,8 +450,10 @@ def main():
     print(f"\nOutput directory: {config['paths']['data_processed']}")
     print(f"  - train_images.npy: ({n_train}, 12, 256, 256)")
     print(f"  - train_masks.npy: ({n_train}, 256, 256)")
+    print(f"  - train_field_ids.npy: ({n_train}, 256, 256)")
     print(f"  - val_images.npy: ({n_val}, 12, 256, 256)")
     print(f"  - val_masks.npy: ({n_val}, 256, 256)")
+    print(f"  - val_field_ids.npy: ({n_val}, 256, 256)")
     print(f"  - normalization_stats.json")
     print(f"  - class_map.json")
 

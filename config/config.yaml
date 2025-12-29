@@ -33,11 +33,35 @@ backend:
 # =============================================================================
 training:
   batch_size: 32
-  num_workers: 2 # for colab
+  num_workers: 2  # for colab
   val_split: 0.2
   random_seed: 42
-  ignore_index: 0
-  min_labeled_fraction: 0.00
+  epochs: 50
+
+  # Loss configuration
+  # AgriFieldNet is pixel-labeled but challenge scoring is per-field.
+  # Field loss aligns training with scoring; pixel loss keeps overlays correct.
+  use_field_loss: true
+  lambda_pixel: 0.2           # Weight for pixel-level loss (overlay quality)
+  lambda_field: 1.0           # Weight for field-level loss (main driver)
+
+  # Masking and class weighting
+  ignore_index: 0             # Class 0 is unlabeled/background - IGNORE in pixel loss
+  min_labeled_fraction: 0.001 # Skip batches with <0.1% labeled pixels
+  background_weight: 0.0      # Set to 0 since background is ignored anyway
+  focal_gamma: 2.0            # Focal loss focusing parameter
+
+  # Weighted tile sampling
+  use_weighted_sampling: true # Oversample tiles with more labeled pixels
+  weight_power: 1.5           # Preference strength (higher = stronger preference)
+
+  # Optimizer
+  learning_rate: 0.0003
+  weight_decay: 0.0001
+  optimizer: adamw
+
+  # Model selection criterion: "field_ce" (lower is better) or "mIoU" (higher is better)
+  model_selection: field_ce
 
 # =============================================================================
 # Sentinel-2 Band Configuration (all 12 bands)

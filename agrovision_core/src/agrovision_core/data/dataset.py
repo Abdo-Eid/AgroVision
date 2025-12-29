@@ -34,8 +34,10 @@ class CropDataset(Dataset):
         Array of shape (N, 12, 256, 256) containing normalized satellite imagery
     masks : np.ndarray
         Array of shape (N, 256, 256) containing crop class labels
+    field_ids : np.ndarray or None
+        Array of shape (N, 256, 256) containing field IDs per pixel (0 = no field)
     transforms : callable, optional
-        Optional transforms to apply to (image, mask) pairs
+        Optional transforms to apply to (image, mask, field_ids) tuples
     class_map : dict
         Mapping of class IDs to class names and colors
     """
@@ -69,6 +71,7 @@ class CropDataset(Dataset):
         # Load arrays
         images_path = self.data_dir / f"{split}_images.npy"
         masks_path = self.data_dir / f"{split}_masks.npy"
+        field_ids_path = self.data_dir / f"{split}_field_ids.npy"
 
         if not images_path.exists():
             raise FileNotFoundError(
@@ -79,10 +82,19 @@ class CropDataset(Dataset):
         if load_to_memory:
             self.images = np.load(images_path)
             self.masks = np.load(masks_path)
+            # Load field_ids if available
+            if field_ids_path.exists():
+                self.field_ids = np.load(field_ids_path)
+            else:
+                self.field_ids = None
         else:
             # Memory-mapped mode for large datasets
             self.images = np.load(images_path, mmap_mode="r")
             self.masks = np.load(masks_path, mmap_mode="r")
+            if field_ids_path.exists():
+                self.field_ids = np.load(field_ids_path, mmap_mode="r")
+            else:
+                self.field_ids = None
 
         # Load class map
         class_map_path = self.data_dir / "class_map.json"
@@ -131,16 +143,24 @@ class CropDataset(Dataset):
             Dictionary containing:
             - 'image': torch.Tensor of shape (12, 256, 256), float32
             - 'mask': torch.Tensor of shape (256, 256), int64
+            - 'field_ids': torch.Tensor of shape (256, 256), int64 (if available)
         """
         image = self.images[idx].copy()  # (12, 256, 256)
         mask = self.masks[idx].copy()  # (256, 256)
 
+        # Get field_ids if available
+        if self.field_ids is not None:
+            field_ids = self.field_ids[idx].copy()  # (256, 256)
+        else:
+            field_ids = np.zeros_like(mask)
+
         if self.transforms is not None:
-            image, mask = self.transforms(image, mask)
+            image, mask, field_ids = self.transforms(image, mask, field_ids)
 
         return {
             "image": torch.from_numpy(image).float(),
             "mask": torch.from_numpy(mask).long(),
+            "field_ids": torch.from_numpy(field_ids).long(),
         }
 
     @property
@@ -203,6 +223,44 @@ class CropDataset(Dataset):
             }
         return {}
 
+    def get_sample_weights(self, power: float = 1.0) -> torch.Tensor:
+        """
+        Compute per-tile sampling weights based on labeled pixel fraction.
+
+        Tiles with more labeled pixels (non-background) get higher weights,
+        making them more likely to be sampled during training.
+
+        Parameters
+        ----------
+        power : float
+            Exponent for weight scaling. Higher values favor tiles with more labels.
+            - 1.0: Linear weighting (proportional to labeled fraction)
+            - 2.0: Quadratic (strongly favor high-label tiles)
+            - 0.5: Square root (moderate preference)
+
+        Returns
+        -------
+        torch.Tensor
+            Sampling weights of shape (num_tiles,).
+        """
+        n_tiles = len(self.masks)
+        fractions = np.zeros(n_tiles, dtype=np.float32)
+
+        for i in range(n_tiles):
+            mask = self.masks[i]
+            # Count non-background pixels (class != 0)
+            labeled_pixels = np.sum(mask != 0)
+            total_pixels = mask.size
+            fractions[i] = labeled_pixels / total_pixels
+
+        # Add small epsilon to avoid zero weights
+        weights = (fractions + 1e-6) ** power
+
+        # Normalize to sum to len(dataset) for proper sampling
+        weights = weights / weights.sum() * n_tiles
+
+        return torch.from_numpy(weights).float()
+
 
 def get_dataloaders(
     data_dir: Union[str, Path],
@@ -260,7 +318,7 @@ class RandomFlipRotate:
     """
     Random horizontal/vertical flip and 90-degree rotation augmentation.
 
-    Applies the same transform to both image and mask.
+    Applies the same transform to image, mask, and field_ids.
     """
 
     def __init__(self, p_flip: float = 0.5, p_rotate: float = 0.5):
@@ -276,23 +334,26 @@ class RandomFlipRotate:
         self.p_rotate = p_rotate
 
     def __call__(
-        self, image: np.ndarray, mask: np.ndarray
-    ) -> tuple[np.ndarray, np.ndarray]:
-        """Apply random transforms to image and mask."""
+        self, image: np.ndarray, mask: np.ndarray, field_ids: np.ndarray
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Apply random transforms to image, mask, and field_ids."""
         # Random horizontal flip
         if np.random.random() < self.p_flip:
             image = np.flip(image, axis=2).copy()  # Flip width (axis 2 for CHW)
             mask = np.flip(mask, axis=1).copy()  # Flip width (axis 1 for HW)
+            field_ids = np.flip(field_ids, axis=1).copy()
 
         # Random vertical flip
         if np.random.random() < self.p_flip:
             image = np.flip(image, axis=1).copy()  # Flip height
             mask = np.flip(mask, axis=0).copy()
+            field_ids = np.flip(field_ids, axis=0).copy()
 
         # Random 90-degree rotation
         if np.random.random() < self.p_rotate:
             k = np.random.randint(1, 4)  # 1, 2, or 3 rotations
             image = np.rot90(image, k, axes=(1, 2)).copy()
             mask = np.rot90(mask, k, axes=(0, 1)).copy()
+            field_ids = np.rot90(field_ids, k, axes=(0, 1)).copy()
 
-        return image, mask
+        return image, mask, field_ids

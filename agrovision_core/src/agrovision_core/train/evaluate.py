@@ -80,7 +80,9 @@ def evaluate(args: argparse.Namespace) -> None:
     ignore_index = training_cfg.get("ignore_index", None)
     if ignore_index is not None:
         ignore_index = int(ignore_index)
-        if ignore_index <= 0:
+        # Only invalidate truly negative values (e.g., -1 used as sentinel)
+        # 0 is a VALID ignore_index for background/unlabeled class
+        if ignore_index < 0:
             ignore_index = None
 
     model = build_model(args.model, in_channels, num_classes, model_cfg)
