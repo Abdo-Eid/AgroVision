@@ -113,8 +113,8 @@ dependencies = [
     "wcwidth==0.2.14",
     "yarl==1.22.0",
     "torch==2.7.1",
-    "torchvision==0.22.1"
-
+    "torchvision==0.22.1",
+    "torchgen>=0.0.1",
 ]
 
 [[tool.uv.index]]
