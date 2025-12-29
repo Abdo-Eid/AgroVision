@@ -6,8 +6,6 @@ node_modules/
 # Ignore any top-level data folder
 /data/
 
-# But keep the package data folder tracked
-!agrovision_core/src/agrovision_core/data/
 
 outputs/
 # C extensions
@@ -216,3 +214,6 @@ __marimo__/
 #Elsmmany
 .claude/
 CLAUDE.md
+# But keep the package data folder tracked
+!agrovision_core/src/agrovision_core/data/
+!frontend/src/lib/
