@@ -6,7 +6,7 @@ import argparse
 import json
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
 import torch
@@ -14,6 +14,7 @@ import yaml
 
 from ..data.dataset import CropDataset
 from ..models.unet_baseline import UNet
+from .losses import FocalCrossEntropyLoss
 from .metrics import compute_confusion_matrix, segmentation_metrics_from_confusion_matrix
 
 
@@ -99,7 +100,7 @@ def evaluate(
     loader: torch.utils.data.DataLoader,
     device: torch.device,
     num_classes: int,
-    ignore_index: int,
+    ignore_index: Optional[int],
 ) -> Dict[str, Any]:
     """Run evaluation for one epoch."""
     model.eval()
@@ -117,7 +118,9 @@ def evaluate(
     if all_cm is None:
         return {
             "mIoU": 0.0,
+            "mIoU_fg": 0.0,
             "macro_f1": 0.0,
+            "Dice_fg": 0.0,
             "per_class_iou": [0.0] * num_classes,
             "per_class_f1": [0.0] * num_classes,
             "confusion_matrix": [[0] * num_classes for _ in range(num_classes)],
@@ -142,17 +145,28 @@ def train(args: argparse.Namespace) -> None:
 
     in_channels = train_dataset.num_channels
     num_classes = train_dataset.num_classes
-    ignore_index = int(training_cfg.get("ignore_index", 0))
+    ignore_index = training_cfg.get("ignore_index", None)
+    if ignore_index is not None:
+        ignore_index = int(ignore_index)
+        if ignore_index <= 0:
+            ignore_index = None
     min_labeled_fraction = float(training_cfg.get("min_labeled_fraction", 0.0))
 
     model = build_model(args.model, in_channels, num_classes, model_cfg)
     model.to(device)
 
-    weights = train_dataset.get_class_weights(normalize=True).to(device)
-    if 0 <= ignore_index < len(weights):
-        weights[ignore_index] = 0.0
-
-    criterion = torch.nn.CrossEntropyLoss(ignore_index=ignore_index, weight=weights)
+    class_weights_cfg = training_cfg.get("class_weights", None)
+    if class_weights_cfg is not None:
+        weights = torch.tensor(class_weights_cfg, dtype=torch.float32)
+    else:
+        weights = train_dataset.get_class_weights(normalize=True)
+    if weights.numel() != num_classes:
+        raise ValueError("class_weights must match num_classes.")
+    weights = weights.to(device)
+    background_weight = float(training_cfg.get("background_weight", 0.05))
+    weights[0] = background_weight  # keep background low to reduce imbalance dominance
+    gamma = float(training_cfg.get("focal_gamma", 2.0))
+    criterion = FocalCrossEntropyLoss(gamma=gamma, alpha=weights)
 
     lr = float(training_cfg.get("learning_rate", 1e-3))
     weight_decay = float(training_cfg.get("weight_decay", 1e-4))
@@ -194,7 +208,7 @@ def train(args: argparse.Namespace) -> None:
             images = batch["image"].to(device, non_blocking=True)
             masks = batch["mask"].to(device, non_blocking=True)
 
-            if min_labeled_fraction > 0.0:
+            if min_labeled_fraction > 0.0 and ignore_index is not None:
                 labeled_fraction = (masks != ignore_index).float().mean().item()
                 if labeled_fraction < min_labeled_fraction:
                     continue
@@ -216,7 +230,9 @@ def train(args: argparse.Namespace) -> None:
             "epoch": epoch,
             "train_loss": avg_loss,
             "val_mIoU": val_miou,
+            "val_mIoU_fg": float(val_metrics["mIoU_fg"]),
             "val_macro_f1": float(val_metrics["macro_f1"]),
+            "val_Dice_fg": float(val_metrics["Dice_fg"]),
             "val_per_class_iou": val_metrics["per_class_iou"],
             "val_per_class_f1": val_metrics["per_class_f1"],
         }

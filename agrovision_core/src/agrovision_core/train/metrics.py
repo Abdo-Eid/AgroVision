@@ -1,8 +1,8 @@
-"""Segmentation metrics with ignore_index handling."""
+"""Segmentation metrics with optional void label handling."""
 
 from __future__ import annotations
 
-from typing import Dict, List, Optional
+from typing import Dict, Optional
 
 import torch
 
@@ -30,15 +30,21 @@ def compute_confusion_matrix(
     num_classes : int
         Number of classes (including ignore index if present).
     ignore_index : int, optional
-        Class index to ignore.
+        Optional void label to ignore (background class 0 is always kept).
     """
     preds = preds.view(-1).long()
     targets = targets.view(-1).long()
 
+    valid = torch.ones_like(targets, dtype=torch.bool)
     if ignore_index is not None:
-        valid = targets != ignore_index
-        preds = preds[valid]
-        targets = targets[valid]
+        valid &= targets != ignore_index
+
+    # Guard against unexpected label ranges (e.g., raw IDs not remapped).
+    valid &= (targets >= 0) & (targets < num_classes)
+    valid &= (preds >= 0) & (preds < num_classes)
+
+    preds = preds[valid]
+    targets = targets[valid]
 
     if preds.numel() == 0:
         return torch.zeros((num_classes, num_classes), dtype=torch.long, device=preds.device)
@@ -66,11 +72,12 @@ def segmentation_metrics(
     ignore_index: Optional[int] = None,
 ) -> Dict[str, object]:
     """
-    Compute mIoU, per-class IoU, and macro F1.
+    Compute mIoU, per-class IoU, macro F1, and foreground-only aggregates.
 
     Returns
     -------
-    dict with keys: mIoU, per_class_iou, macro_f1, per_class_f1, confusion_matrix
+    dict with keys: mIoU, mIoU_fg, per_class_iou, macro_f1, Dice_fg, per_class_f1,
+    confusion_matrix
     """
     cm = compute_confusion_matrix(preds, targets, num_classes, ignore_index)
     cm = cm.to(dtype=torch.float32)
@@ -93,10 +100,23 @@ def segmentation_metrics(
         miou = 0.0
         macro_f1 = 0.0
 
+    fg_valid = valid.clone()
+    # Foreground-only averages exclude background class 0.
+    if num_classes > 0:
+        fg_valid[0] = False
+    if fg_valid.any():
+        miou_fg = iou[fg_valid].mean().item()
+        dice_fg = f1[fg_valid].mean().item()
+    else:
+        miou_fg = 0.0
+        dice_fg = 0.0
+
     return {
         "mIoU": miou,
+        "mIoU_fg": miou_fg,
         "per_class_iou": iou.detach().cpu().tolist(),
         "macro_f1": macro_f1,
+        "Dice_fg": dice_fg,
         "per_class_f1": f1.detach().cpu().tolist(),
         "confusion_matrix": cm.detach().cpu().to(dtype=torch.long).tolist(),
     }
@@ -128,10 +148,23 @@ def segmentation_metrics_from_confusion_matrix(
         miou = 0.0
         macro_f1 = 0.0
 
+    fg_valid = valid.clone()
+    # Foreground-only averages exclude background class 0.
+    if num_classes > 0:
+        fg_valid[0] = False
+    if fg_valid.any():
+        miou_fg = iou[fg_valid].mean().item()
+        dice_fg = f1[fg_valid].mean().item()
+    else:
+        miou_fg = 0.0
+        dice_fg = 0.0
+
     return {
         "mIoU": miou,
+        "mIoU_fg": miou_fg,
         "per_class_iou": iou.detach().cpu().tolist(),
         "macro_f1": macro_f1,
+        "Dice_fg": dice_fg,
         "per_class_f1": f1.detach().cpu().tolist(),
         "confusion_matrix": cm.detach().cpu().to(dtype=torch.long).tolist(),
     }

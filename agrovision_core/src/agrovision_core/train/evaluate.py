@@ -77,7 +77,11 @@ def evaluate(args: argparse.Namespace) -> None:
     dataset = val_loader.dataset
     in_channels = dataset.num_channels
     num_classes = dataset.num_classes
-    ignore_index = int(training_cfg.get("ignore_index", 0))
+    ignore_index = training_cfg.get("ignore_index", None)
+    if ignore_index is not None:
+        ignore_index = int(ignore_index)
+        if ignore_index <= 0:
+            ignore_index = None
 
     model = build_model(args.model, in_channels, num_classes, model_cfg)
     model.to(device)
@@ -100,7 +104,9 @@ def evaluate(args: argparse.Namespace) -> None:
     if all_cm is None:
         metrics = {
             "mIoU": 0.0,
+            "mIoU_fg": 0.0,
             "macro_f1": 0.0,
+            "Dice_fg": 0.0,
             "per_class_iou": [0.0] * num_classes,
             "per_class_f1": [0.0] * num_classes,
             "confusion_matrix": [[0] * num_classes for _ in range(num_classes)],
@@ -109,7 +115,7 @@ def evaluate(args: argparse.Namespace) -> None:
         metrics = segmentation_metrics_from_confusion_matrix(all_cm, ignore_index)
 
     metrics["num_classes"] = num_classes
-    metrics["ignore_index"] = ignore_index
+    metrics["ignore_index"] = -1 if ignore_index is None else ignore_index
     metrics["checkpoint"] = str(args.checkpoint)
 
     output_root = Path("outputs/runs")
@@ -119,7 +125,10 @@ def evaluate(args: argparse.Namespace) -> None:
     class_map = load_class_map(config["paths"]["data_processed"])
     write_metrics(output_dir, metrics, class_map)
 
-    print(f"mIoU: {metrics['mIoU']:.4f} | macro_f1: {metrics['macro_f1']:.4f}")
+    print(
+        f"mIoU: {metrics['mIoU']:.4f} | mIoU_fg: {metrics['mIoU_fg']:.4f} | "
+        f"Dice_fg: {metrics['Dice_fg']:.4f} | macro_f1: {metrics['macro_f1']:.4f}"
+    )
     print(f"Saved metrics to: {output_dir}")
 
 
