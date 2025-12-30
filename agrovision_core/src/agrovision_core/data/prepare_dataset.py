@@ -44,6 +44,7 @@ def load_config(config_path: str = "config/config.yaml") -> dict:
     with open(config_path, encoding="utf-8") as f:
         return yaml.safe_load(f)
 
+
 def build_raw_to_contig_map(config: dict) -> dict[int, int]:
     """
     Build a mapping from raw class IDs to contiguous IDs 0..N-1.
@@ -53,7 +54,10 @@ def build_raw_to_contig_map(config: dict) -> dict[int, int]:
       contig : [0,1,2,3,4,5,6,7,8,9,10,11,12,13]
     """
     raw_ids = sorted(int(k) for k in config["classes"].keys())
+    # enumerate gives (index, value) pairs: (0, 0), (1, 1), (2, 2), ..., (7, 8), (8, 9), ..., (13, 36)
+    # {0: 0, 1: 1, 2: 2, 3: 3, 4: 4, 5: 5, 6: 6, 8: 7, 9: 8, 13: 9, 14: 10, 15: 11, 16: 12, 36: 13}
     return {raw_id: i for i, raw_id in enumerate(raw_ids)}
+
 
 def get_valid_tile_ids(config: dict) -> list[str]:
     """
@@ -108,6 +112,13 @@ def create_train_val_split(
         (train_ids, val_ids)
     """
     np.random.seed(random_seed)
+    # If we have 100 tiles: indices = [47, 12, 89, 3, 56, ...]
+    # | Method | In-place? | Returns | NumPy integration |
+    # |--------|-----------|---------|-------------------|
+    # | `random.shuffle(list)` | Yes | None | No |
+    # | `np.random.permutation(n)` | No | New array | Yes |
+
+    # `permutation` returns a new array, which is cleaner for our use case.
     indices = np.random.permutation(len(tile_ids))
 
     n_val = int(len(tile_ids) * val_split)
@@ -126,6 +137,13 @@ def compute_band_statistics(
     sample_size: Optional[int] = None,
 ) -> dict:
     """
+    Welford's algorithm
+    | Method | Memory | Passes | Numerical Stability |
+    |--------|--------|--------|---------------------|
+    | Two-pass | O(n) | 2 | Good |
+    | Naive one-pass | O(1) | 1 | **Poor** (catastrophic cancellation) |
+    | Welford | O(1) | 1 | **Excellent** |
+
     Compute per-band mean and standard deviation from training tiles.
 
     Parameters
@@ -230,6 +248,7 @@ def load_tile(
             # Z-score normalization
             mean = norm_stats[band]["mean"]
             std = norm_stats[band]["std"]
+            #  1e-6`: Prevents division by zero if std=0 (constant band).
             data = (data - mean) / (std + 1e-6)
         else:
             # If band is missing, use zeros
@@ -261,6 +280,14 @@ def generate_npy_files(
 ) -> tuple[int, dict]:
     """
     Generate .npy files for a set of tiles.
+
+    | Aspect | GeoTIFF | .npy |
+    |--------|---------|------|
+    | Load time | ~50ms per file | ~5ms per tile |
+    | Total for 1000 tiles | ~50 seconds | <1 second |
+    | Dependencies | rasterio, GDAL | numpy only |
+    | Geospatial info | Preserved | Lost |
+    | File size | Compressed | Uncompressed |
 
     Parameters
     ----------

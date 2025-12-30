@@ -57,9 +57,17 @@ def load_band_tiff(
             data = src.read(1).astype(np.float32)
         else:
             # Resample to target size using bilinear interpolation
+            # | Method     | When to Use             | Mathematical Approach      |
+            # | ---------- | ----------------------- | -------------------------- |
+            # | `nearest`  | Labels/masks            | Take nearest pixel value   |
+            # | `bilinear` | Continuous data (bands) | Linear interpolation in 2D |
+            # | `cubic`    | High-quality resize     | Cubic polynomial fitting   |
+            # | `lanczos`  | Maximum quality         | Sinc function windowed     |
+
             data = src.read(
                 1,
                 out_shape=target_size,
+                # Bilinear creates smooth transitions between pixels, which is appropriate for continuous reflectance values.
                 resampling=Resampling.bilinear,
             ).astype(np.float32)
 
@@ -99,6 +107,7 @@ def load_label_tiff(
                 1,
                 out_shape=target_size,
                 resampling=Resampling.nearest,
+                # CrossEntropyLoss` expects targets as `LongTensor` (int64). Using int64 from the start avoids conversion.
             ).astype(np.int64)
 
     return data
@@ -110,21 +119,26 @@ def resample_to_target_size(
     method: str = "bilinear",
 ) -> np.ndarray:
     """
-    Resample a 2D array to target size.
+    This function provides **rasterio-free resampling** using scipy. It's an alternative when:
+    1. Data is already in numpy arrays (not on disk)
+    2. Rasterio isn't installed
+    3. Simple array resizing is needed
 
-    Parameters
-    ----------
-    data : np.ndarray
-        Input 2D array
-    target_size : tuple[int, int]
-        Target (height, width)
-    method : str
-        Resampling method: 'bilinear' for continuous data, 'nearest' for labels
+        Resample a 2D array to target size.
 
-    Returns
-    -------
-    np.ndarray
-        Resampled 2D array
+        Parameters
+        ----------
+        data : np.ndarray
+            Input 2D array
+        target_size : tuple[int, int]
+            Target (height, width)
+        method : str
+            Resampling method: 'bilinear' for continuous data, 'nearest' for labels
+
+        Returns
+        -------
+        np.ndarray
+            Resampled 2D array
     """
     from scipy.ndimage import zoom
 
@@ -134,6 +148,15 @@ def resample_to_target_size(
     zoom_factors = (target_size[0] / data.shape[0], target_size[1] / data.shape[1])
 
     if method == "nearest":
+        ### Zoom Order Parameter
+
+        # | Order | Method           | Use Case                  |
+        # | ----- | ---------------- | ------------------------- |
+        # | 0     | Nearest-neighbor | Labels, categorical data  |
+        # | 1     | Bilinear         | Continuous data (default) |
+        # | 2     | Quadratic        | Smooth images             |
+        # | 3     | Cubic            | High-quality resize       |
+
         return zoom(data, zoom_factors, order=0)
     else:  # bilinear
         return zoom(data, zoom_factors, order=1)
@@ -230,7 +253,9 @@ def get_label_filepath(
     labels_dir = Path(labels_dir)
 
     if label_type == "field_ids":
-        filename = f"ref_agrifieldnet_competition_v1_labels_train_{tile_id}_field_ids.tif"
+        filename = (
+            f"ref_agrifieldnet_competition_v1_labels_train_{tile_id}_field_ids.tif"
+        )
     else:  # raster labels
         filename = f"ref_agrifieldnet_competition_v1_labels_train_{tile_id}.tif"
 
@@ -256,6 +281,7 @@ def write_json(path: Union[str, Path], obj: Any) -> None:
     path = Path(path)
     ensure_dir(path.parent)
     with path.open("w", encoding="utf-8") as handle:
+        # | `ensure_ascii=False` | False    | Write Unicode directly (not escaped) |
         json.dump(obj, handle, indent=2, ensure_ascii=False)
 
 
