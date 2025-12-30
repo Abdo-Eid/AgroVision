@@ -8,15 +8,15 @@ paths:
   data_raw: data/agrifieldnet
   data_processed: data/processed
   splits_dir: data/splits
-  model_checkpoint: outputs/models/unet_baseline_best_model.pth
-  production_model_path: outputs/models/unet_baseline_best_model.pth
+  model_checkpoint: outputs/models/best_model.pth
+  production_model_path: outputs/models/litefieldseg_best_model.pth
 
 # =============================================================================
 # Model Settings
 # =============================================================================
 model:
   # Required for deterministic production loading
-  name: unet_baseline
+  name: litefieldseg
   in_channels: 12
   num_classes: 14
 
@@ -47,7 +47,7 @@ training:
   num_workers: 2  # for colab
   val_split: 0.2
   random_seed: 42
-  epochs: 50
+  epochs: 10
 
   # Loss configuration
   # AgriFieldNet is pixel-labeled but challenge scoring is per-field.
