@@ -9,15 +9,21 @@ paths:
   data_processed: data/processed
   splits_dir: data/splits
   model_checkpoint: outputs/models/unet_baseline_best_model.pth
+  production_model_path: outputs/models/unet_baseline_best_model.pth
 
 # =============================================================================
 # Model Settings
 # =============================================================================
 model:
+  # Required for deterministic production loading
+  name: unet_baseline
+  in_channels: 12
+  num_classes: 14
+
+  # Runtime/inference settings
   device: cuda
-  tile_limit: 9  # Maximum tiles per inference request
+  tile_limit: 9
   input_size: 256
-  num_classes: 14  # 13 crops + background
 
 # =============================================================================
 # Backend Settings

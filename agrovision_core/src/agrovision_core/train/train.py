@@ -15,7 +15,7 @@ import yaml
 from torch.utils.data import WeightedRandomSampler
 
 from ..data.dataset import CropDataset
-from ..models.unet_baseline import UNet
+from ..models.registry import build_model as build_registered_model, ensure_models_loaded
 from .losses import CombinedLoss, FieldLoss, FocalCrossEntropyLoss
 from .metrics import compute_confusion_matrix, segmentation_metrics_from_confusion_matrix
 
@@ -47,15 +47,12 @@ def build_model(
     model_config: Dict[str, Any],
 ) -> torch.nn.Module:
     """Construct a model from config."""
-    if model_name == "unet_baseline":
-        return UNet(
-            in_channels=in_channels,
-            num_classes=num_classes,
-            base_channels=model_config.get("base_channels", 64),
-            depth=model_config.get("depth", 4),
-            dropout=model_config.get("dropout", 0.0),
-        )
-    raise ValueError(f"Unknown model_name: {model_name}")
+    # Ensure all model modules are imported so the registry is populated.
+    ensure_models_loaded()
+    try:
+        return build_registered_model(model_name, in_channels, num_classes, model_config)
+    except KeyError as exc:
+        raise ValueError(f"Unknown model_name: {model_name}") from exc
 
 
 def create_dataloaders(
@@ -447,6 +444,7 @@ def train(args: argparse.Namespace) -> None:
             "best_miou": best_miou,
             "best_field_ce": best_field_ce,
             "model_name": args.model,
+            "model_cfg": model_cfg,
             "num_classes": num_classes,
             "in_channels": in_channels,
             "config_path": args.config,

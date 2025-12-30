@@ -13,7 +13,7 @@ import numpy as np
 import torch
 from PIL import Image
 
-from agrovision_core.models.unet_baseline import UNet
+from agrovision_core.models.registry import build_model, ensure_models_loaded
 from agrovision_core.utils.io import load_config, resolve_path
 
 
@@ -28,6 +28,7 @@ class InferenceError(RuntimeError):
 @dataclass(frozen=True)
 class InferenceResult:
     overlay_image: str | None
+    mask_image: str | None
     legend: list[dict[str, Any]]
     stats: list[dict[str, Any]]
     runtime_ms: int
@@ -94,48 +95,40 @@ class InferenceService:
 
     def _resolve_model_path(self) -> Path:
         cfg = self._load_config()
-        candidates: list[str] = []
-        paths_cfg = cfg.get("paths", {})
-        if paths_cfg.get("model_checkpoint"):
-            candidates.append(paths_cfg["model_checkpoint"])
-        if cfg.get("model_path"):
-            candidates.append(cfg["model_path"])
-        backend_cfg = self._get_backend_cfg()
-        if backend_cfg.get("model_path"):
-            candidates.append(backend_cfg["model_path"])
-        candidates.extend(
-            [
-                "outputs/runs/best_model.pth",
-                "outputs/models/unet_baseline_best_model.pth",
-            ]
-        )
 
-        for candidate in candidates:
-            path = resolve_path(candidate)
-            if path.exists():
-                return path
-        raise InferenceError(
-            "model_checkpoint_missing",
-            "Model checkpoint not found. Train the model or update config paths.",
-            status_code=500,
-        )
+        model_path = cfg.get("paths", {}).get("production_model_path")
+        if not model_path:
+            raise InferenceError(
+                "production_model_path_missing",
+                "paths.production_model_path is required in config.yaml",
+                status_code=500,
+            )
+
+        path = resolve_path(model_path)
+
+        # fail fast
+        if not path.exists():
+            raise InferenceError(
+                "model_checkpoint_missing",
+                f"Configured production model checkpoint does not exist: {path}",
+                status_code=500,
+            )
+
+        return path
 
     def _build_model(
         self, model_name: str, in_channels: int, num_classes: int, model_cfg: dict[str, Any]
     ) -> torch.nn.Module:
-        if model_name != "unet_baseline":
+        # Ensure all model modules are imported so the registry is populated.
+        ensure_models_loaded()
+        try:
+            return build_model(model_name, in_channels, num_classes, model_cfg)
+        except KeyError as exc:
             raise InferenceError(
                 "model_not_supported",
-                f"Unsupported model_name: {model_name}",
+                f"Unsupported model_name: {model_name}. {exc}",
                 status_code=500,
-            )
-        return UNet(
-            in_channels=in_channels,
-            num_classes=num_classes,
-            base_channels=model_cfg.get("base_channels", 64),
-            depth=model_cfg.get("depth", 4),
-            dropout=model_cfg.get("dropout", 0.0),
-        )
+            ) from exc
 
     def _load_model(self) -> torch.nn.Module:
         if self._model is not None:
@@ -143,33 +136,37 @@ class InferenceService:
 
         cfg = self._load_config()
         model_cfg = cfg.get("model", {})
+
+        # Device strictly from config
         device_name = model_cfg.get("device", "cpu")
         self._device = self._select_device(device_name)
 
-        checkpoint_path = self._resolve_model_path()
-        self._logger.info("Loading checkpoint from %s", checkpoint_path)
-        checkpoint = torch.load(checkpoint_path, map_location="cpu")
-        self._logger.info("Checkpoint loaded into memory (%s)", checkpoint_path.name)
+        # Production model path from config
+        model_path = self._resolve_model_path()
+        self._logger.info("Loading model from %s", model_path)
+
+        checkpoint = torch.load(model_path, map_location="cpu")
+        self._logger.info("Model checkpoint loaded into memory (%s)", model_path.name)
+
         if isinstance(checkpoint, dict) and "model_state" in checkpoint:
             state_dict = checkpoint["model_state"]
-            meta = checkpoint
         else:
             state_dict = checkpoint
-            meta = {}
 
-        class_map = self._load_class_map()
-        num_classes = int(
-            meta.get("num_classes")
-            or class_map.get("num_classes", 0)
-            or model_cfg.get("num_classes", 14)
-        )
-        bands = cfg.get("bands", [])
-        in_channels = int(
-            meta.get("in_channels") or len(bands) or model_cfg.get("in_channels", 12)
-        )
-        model_name = meta.get("model_name", model_cfg.get("name", "unet_baseline"))
+        # Model spec strictly from config (no checkpoint meta, no class_map, no bands)
+        model_name = model_cfg.get("name", "unet_baseline")
+        try:
+            num_classes = int(model_cfg["num_classes"])   # required
+            in_channels = int(model_cfg["in_channels"])   # required
+        except KeyError as exc:
+            raise InferenceError(
+                "model_config_missing",
+                f"Missing required model config key: {exc}",
+                status_code=500,
+            ) from exc
 
         model = self._build_model(model_name, in_channels, num_classes, model_cfg)
+
         try:
             model.load_state_dict(state_dict)
         except RuntimeError as exc:
@@ -183,6 +180,7 @@ class InferenceService:
         model.eval()
         self._model = model
         self._num_classes = num_classes
+
         self._logger.info(
             "Model ready | name=%s device=%s in_channels=%s num_classes=%s",
             model_name,
@@ -191,6 +189,7 @@ class InferenceService:
             num_classes,
         )
         return model
+
 
     def _band_names(self) -> list[str]:
         bands = self._load_config().get("bands", [])
@@ -459,6 +458,22 @@ class InferenceService:
         encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
         return f"data:image/png;base64,{encoded}"
 
+    def _render_mask(
+        self,
+        pred_mask: np.ndarray,
+        class_map: dict[str, Any],
+    ) -> str:
+        num_classes = int(self._num_classes or pred_mask.max() + 1)
+        colormap = self._build_colormap(class_map, num_classes)
+        mask_rgb = colormap[pred_mask].astype(np.uint8)
+
+        # Opaque mask-only image (background class renders as black).
+        image = Image.fromarray(mask_rgb, mode="RGB")
+        buffer = io.BytesIO()
+        image.save(buffer, format="PNG")
+        encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
+        return f"data:image/png;base64,{encoded}"
+
     def _compute_stats(
         self,
         pred_mask: np.ndarray,
@@ -540,6 +555,7 @@ class InferenceService:
         runtime_ms = int((time.perf_counter() - start) * 1000)
         return InferenceResult(
             overlay_image=result.overlay_image,
+            mask_image=result.mask_image,
             legend=result.legend,
             stats=result.stats,
             runtime_ms=runtime_ms,
@@ -578,9 +594,11 @@ class InferenceService:
 
         overlay_alpha = float(self._get_backend_cfg().get("overlay_alpha", 0.45))
         overlay = self._render_overlay(rgb, pred_mask, class_map, overlay_alpha)
+        mask_image = self._render_mask(pred_mask, class_map)
         stats = self._compute_stats(pred_mask, probs, class_map, include_confidence)
         return InferenceResult(
             overlay_image=overlay,
+            mask_image=mask_image,
             legend=self._legend(class_map),
             stats=stats,
             runtime_ms=0,

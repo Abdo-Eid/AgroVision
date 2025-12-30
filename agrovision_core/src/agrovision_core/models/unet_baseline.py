@@ -8,8 +8,11 @@ import torch
 from torch import nn
 
 from .blocks import ConvBlock, DownBlock, UpBlock
+from .registry import register_model
 
 
+# Registered so it can be constructed via the model registry by name.
+@register_model("unet_baseline")
 class UNet(nn.Module):
     """U-Net baseline for semantic segmentation."""
 

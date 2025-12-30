@@ -50,6 +50,7 @@ def infer(request: InferRequest):
     logger.info("Inference complete | runtimeMs=%s", result.runtime_ms)
     return InferResponse(
         overlayImage=result.overlay_image,
+        maskImage=result.mask_image,
         legend=result.legend,
         stats=result.stats,
         meta={"runtimeMs": result.runtime_ms, "overlayBounds": result.overlay_bounds},

@@ -14,6 +14,7 @@ export type StatsRow = {
 
 export type InferResponse = {
   overlayImage?: string | null;
+  maskImage?: string | null;
   stats: StatsRow[];
   legend: LegendEntry[];
   meta: {
@@ -69,9 +70,11 @@ export async function runInference(payload: InferPayload): Promise<InferResponse
     throw new Error(message);
   }
   const overlayImage = data?.overlayImage ?? data?.overlay_image ?? null;
+  const maskImage = data?.maskImage ?? data?.mask_image ?? null;
   const meta = data?.meta ?? {};
   return {
     overlayImage,
+    maskImage,
     stats: data?.stats ?? data?.stats_table ?? [],
     legend: data?.legend ?? [],
     meta: {

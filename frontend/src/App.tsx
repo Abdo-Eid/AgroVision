@@ -64,7 +64,8 @@ export default function App() {
   const [academicView, setAcademicView] = useState(false);
   const [runtimeMs, setRuntimeMs] = useState(0);
   const [overlayImage, setOverlayImage] = useState<string | null>(null);
-  const [exporting, setExporting] = useState<"png" | "csv" | null>(null);
+  const [maskImage, setMaskImage] = useState<string | null>(null);
+  const [exporting, setExporting] = useState<"png" | "mask" | "csv" | null>(null);
   const [agriStatus, setAgriStatus] = useState<"idle" | "loading" | "ready" | "error" | "zoom">(
     "idle"
   );
@@ -72,6 +73,9 @@ export default function App() {
   const [tileCount, setTileCount] = useState(1);
   const [viewportBounds, setViewportBounds] = useState<ViewBounds | null>(null);
   const [overlayBounds, setOverlayBounds] = useState<ViewBounds | null>(null);
+
+  const activeOverlayImage =
+    opacity === 100 ? maskImage ?? overlayImage : overlayImage;
 
   const dominantCrop = useMemo(() => {
     if (!stats.length) {
@@ -235,7 +239,7 @@ export default function App() {
     if (!map) {
       return;
     }
-    if (!overlayImage || !overlayBounds) {
+    if (!activeOverlayImage || !overlayBounds) {
       if (map.getLayer(OVERLAY_LAYER_ID)) {
         map.removeLayer(OVERLAY_LAYER_ID);
       }
@@ -253,11 +257,11 @@ export default function App() {
       ];
       const source = map.getSource(OVERLAY_SOURCE_ID) as maplibregl.ImageSource | undefined;
       if (source) {
-        source.updateImage({ url: overlayImage, coordinates });
+        source.updateImage({ url: activeOverlayImage, coordinates });
       } else {
         map.addSource(OVERLAY_SOURCE_ID, {
           type: "image",
-          url: overlayImage,
+          url: activeOverlayImage,
           coordinates
         });
         map.addLayer({
@@ -275,7 +279,7 @@ export default function App() {
       return;
     }
     applyOverlay();
-  }, [overlayImage, overlayBounds]);
+  }, [activeOverlayImage, overlayBounds]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -378,6 +382,7 @@ out geom;`;
       setStats(response.stats);
       setRuntimeMs(response.meta.runtimeMs);
       setOverlayImage(response.overlayImage ?? null);
+      setMaskImage(response.maskImage ?? null);
       const resolvedBounds = response.meta.overlayBounds ?? requestBounds ?? null;
       if (resolvedBounds) {
         setOverlayBounds(resolvedBounds);
@@ -389,15 +394,20 @@ out geom;`;
     }
   };
 
-  const handleExport = async (format: "png" | "csv") => {
+  const handleExport = async (format: "png" | "mask" | "csv") => {
     setExporting(format);
     setError(null);
     try {
-      if (format === "png") {
-        if (!overlayImage) {
-          throw new Error("No overlay image available.");
+      if (format === "png" || format === "mask") {
+        const imageData = format === "mask" ? maskImage : overlayImage;
+        if (!imageData) {
+          throw new Error(
+            format === "mask"
+              ? "No mask-only image available."
+              : "No overlay image available."
+          );
         }
-        const base64 = overlayImage.split(",")[1];
+        const base64 = imageData.split(",")[1];
         if (!base64) {
           throw new Error("Overlay image is invalid.");
         }
@@ -410,7 +420,10 @@ out geom;`;
         const url = URL.createObjectURL(blob);
         const anchor = document.createElement("a");
         anchor.href = url;
-        anchor.download = "agrovision-overlay.png";
+        anchor.download =
+          format === "mask"
+            ? "agrovision-mask-only.png"
+            : "agrovision-overlay.png";
         anchor.click();
         URL.revokeObjectURL(url);
         return;
@@ -494,7 +507,7 @@ out geom;`;
                   onValueChange={(value) => setOpacity(value[0])}
                   max={100}
                   min={0}
-                  step={5}
+                  step={1}
                   className="w-40"
                 />
               </div>
@@ -502,7 +515,7 @@ out geom;`;
               <div className="flex items-center gap-3">
                 <LocateFixed className="h-4 w-4 text-canary" />
                 <span className="text-xs uppercase tracking-[0.3em] text-mist/60">
-                  الاحداثيات
+                  coordinates
                 </span>
                 <span className="text-xs text-mist/70">
                   {center.lat.toFixed(4)}, {center.lng.toFixed(4)}
@@ -659,6 +672,15 @@ out geom;`;
                 disabled={exporting !== null}
               >
                 <span>Download overlay PNG</span>
+                <Download className="h-4 w-4" />
+              </Button>
+              <Button
+                variant="outline"
+                className="w-full justify-between"
+                onClick={() => handleExport("mask")}
+                disabled={exporting !== null}
+              >
+                <span>Download mask-only PNG</span>
                 <Download className="h-4 w-4" />
               </Button>
               <Button
